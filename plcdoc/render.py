@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
-from html import escape
+import re
 from typing import Sequence
+
+# A "<" only opens inline HTML or an autolink when a tag name, "/", "!" or "?"
+# follows it. "x < 10" is literal Markdown and stays verbatim.
+_HTML_OPENER = re.compile(r"<(?=[A-Za-z/!?])")
 
 
 def _cell(value: object) -> str:
     if value is None:
         return ""
-    # Canonical XML type/value fallbacks must display as text in Markdown.
-    return escape(str(value), quote=False).replace("|", "\\|").replace("\n", " ")
+    text = str(value).replace("|", "\\|").replace("\n", " ")
+    return _HTML_OPENER.sub(lambda match: "\\<", text)
 
 
 def markdown_table(headers: Sequence[str], rows: Sequence[Sequence[object]]) -> str:

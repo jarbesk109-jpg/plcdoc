@@ -25,8 +25,9 @@ for these same four variables. They are not additional GVLs or declarations.
 | `aSetpoints` | local | `ARRAY[1..3] OF INT` | `[10, 20, 30]` | Điểm đặt |
 | `aSpare` | local | `ARRAY[1..2] OF FB_Motor` | absent | Băng tải dự phòng |
 
-Neither variable has an address or a qualifier. The parser preserves the array
-initializer as canonical XML; the bracket notation above is explanatory.
+Neither variable has an address or a qualifier. `initial_value` shows the
+placeholder `(array)`; the values live in `initial_value_xml`. The bracket
+notation above is explanatory.
 
 ## Unchanged / ignored
 

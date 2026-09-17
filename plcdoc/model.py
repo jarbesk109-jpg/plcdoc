@@ -75,9 +75,8 @@ class Variable:
     type: str  # "BOOL", "INT", "CTU", "FB_Motor", ...
     scope: str  # owning POU or global variable list, e.g. "PLC_PRG", "GVL_IO"
     section: str  # "local", "input", "output", "inout", "temp", "external", "global", ...
-    is_derived: bool = False  # Includes derived bases inside arrays/other compound types.
     address: str | None = None  # "%IX0.0" or None when not mapped
-    initial_value: str | None = None
+    initial_value: str | None = None  # readable value, or "(array)" / "(struct)" / "(unknown)"
     comment: str = ""  # stripped, "" when absent
     configuration: str | None = None
     application: str | None = None  # resource name; None for project/configuration declarations
@@ -88,12 +87,12 @@ class Variable:
     # Canonical XML keeps details that the readable type/value may not express.
     type_xml: str | None = None
     initial_value_xml: str | None = None
-    derived_types: list[str] = field(default_factory=list)
+    derived_types: list[str] = field(default_factory=list)  # derived bases, also inside arrays
 
     @property
-    def identity(self) -> tuple[str | None, str, str]:
-        """Variable key within a configuration: (application, scope, name)."""
-        return (self.application, self.scope, self.name)
+    def identity(self) -> tuple[str | None, str | None, str, str]:
+        """Project-wide variable key: (configuration, application, scope, name)."""
+        return (self.configuration, self.application, self.scope, self.name)
 
     @property
     def parsed_address(self) -> Address | None:
@@ -137,6 +136,7 @@ class Pou:
     body_text: str | None = None  # textual body (LF line endings); None for graphical bodies
     configuration: str | None = None
     application: str | None = None
+    comment: str = ""  # POU documentation, stripped, "" when absent
     return_type_xml: str | None = None
     graphical_body: list[GraphicalElement] = field(default_factory=list)
     body_xml: str | None = None  # canonical graphical body, including vendor/FBD/CFC details
@@ -164,6 +164,7 @@ class Task:
     programs: list[PouInstance] = field(default_factory=list)
     configuration: str | None = None
     application: str | None = None
+    settings: dict[str, str] = field(default_factory=dict)  # CODESYS TaskSettings, flattened
 
 
 @dataclass

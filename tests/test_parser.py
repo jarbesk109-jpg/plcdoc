@@ -51,14 +51,14 @@ def test_small_variable_details(small):
 
     assert v["bStart"].address == "%IX0.0"
     assert v["bStart"].type == "BOOL"
-    assert v["bStart"].is_derived is False
+    assert v["bStart"].derived_types == []
     assert v["bStart"].comment == "Nút Start (NO)"  # leading space stripped
     assert v["bStart"].initial_value is None
 
     assert v["bLampDone"].address == "%QX0.2"
 
     assert v["fbCounter"].type == "CTU"
-    assert v["fbCounter"].is_derived is True
+    assert v["fbCounter"].derived_types == ["CTU"]
     assert v["fbCounter"].address is None
     assert v["fbCounter"].comment == "Internal"  # lossy comment attribution, see xml-structure.md
 
@@ -86,6 +86,15 @@ def test_small_task(small):
     assert task.priority == 1
     assert task.programs == [PouInstance("PLC_PRG", "PLC_PRG")]
     assert (task.configuration, task.application) == ("Device", "Application")
+    assert task.settings == {
+        "KindOfTask": "Cyclic",
+        "Interval": "t#20ms",
+        "IntervalUnit": "ms",
+        "WithinSPSTimeSlicing": "true",
+        "Watchdog.Enabled": "false",
+        "Watchdog.TimeUnit": "ms",
+        "Watchdog.Sensitivity": "1",
+    }
 
 
 def test_small_v2_reflects_known_changes(small_v2):
@@ -165,7 +174,7 @@ def test_large_fb_motor_sections(large):
     }
     ton = _by_name(fb.variables)["tonFault"]
     assert ton.type == "TON"
-    assert ton.is_derived is True
+    assert ton.derived_types == ["TON"]
     assert ton.scope == "FB_Motor"
     assert fb.body_language == "ST"
     assert "bAlarm := tonFault.Q;" in fb.body_text
@@ -207,7 +216,7 @@ def test_large_plc_prg_uses_fb_instances(large):
     prg = next(p for p in large.pous if p.name == "PLC_PRG")
     v = _by_name(prg.variables)
     assert v["fbConv1"].type == "FB_Motor"
-    assert v["fbConv1"].is_derived is True
+    assert v["fbConv1"].derived_types == ["FB_Motor"]
     assert v["bLineReady"].type == "BOOL"
     assert "rTankLevel := FC_Scale(iRaw := iTankLevelRaw, rMin := 0.0, rMax := 100.0);" in prg.body_text
     assert "rTemp      := FC_Scale(iRaw := iTempRaw, rMin := -20.0, rMax := 150.0);" in prg.body_text
@@ -226,6 +235,24 @@ def test_large_task(large):
     assert [(t.name, t.programs) for t in large.tasks] == [
         ("MainTask", [PouInstance("PLC_PRG", "PLC_PRG")]),
     ]
+
+
+def test_pou_documentation_is_kept(large):
+    """No sample POU carries documentation, so add one to a copy of sample 03."""
+    from xml.etree import ElementTree as ET
+
+    from conftest import LARGE
+    from plcdoc.parser import parse_element
+
+    assert all(p.comment == "" for p in large.pous)
+    root = ET.parse(LARGE).getroot()
+    ns = {"p": "http://www.plcopen.org/xml/tc6_0200"}
+    pou = root.find(".//p:pou[@name='FB_Motor']", ns)
+    doc = ET.SubElement(pou, "{http://www.plcopen.org/xml/tc6_0200}documentation")
+    ET.SubElement(doc, "{http://www.w3.org/1999/xhtml}xhtml").text = " Điều khiển một băng tải "
+    project = parse_element(root)
+    assert next(p for p in project.pous if p.name == "FB_Motor").comment == "Điều khiển một băng tải"
+    assert project != large
 
 
 # --------------------------------------------------------------------------- #

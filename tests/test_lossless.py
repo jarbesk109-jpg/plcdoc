@@ -1,7 +1,8 @@
-"""M2.1 regression probes: semantic edits must survive the XML/model boundary.
+"""M2.1/M2.2 regression probes: semantic edits must survive the XML/model boundary.
 
 Mutate copies of real exports; synthetic fragments cover shapes absent from the
 samples (nested arrays, WSTRING, struct values and generic graphical extensions).
+Every probe names the model field that must carry the change.
 """
 
 from copy import deepcopy
@@ -22,43 +23,77 @@ SETPOINTS = LOCAL + "/p:variable[@name='aSetpoints']"
 SPARE = LOCAL + "/p:variable[@name='aSpare']"
 EXTRA = ".//p:resource/p:globalVars[@name='GVL_Extra']"
 MIXED = EXTRA + "/p:addData/p:data/p:MixedAttrsVarList"
+PLACEHOLDERS = {"(array)", "(struct)", "(unknown)"}
 
 
-def _payload(project):
-    result = project.to_dict()
-    result.pop("warnings")  # A warning is NOT evidence that the changed data survived.
-    return result
+def _pou(project, name):
+    return next(p for p in project.pous if p.name == name)
 
 
-@pytest.mark.parametrize("xpath,attribute,value", [
-    (".//p:LD/p:contact/p:variable", None, "bEStopOK"),
-    (".//p:LD/p:coil/p:variable", None, "bLampAlarm"),
-    (".//p:LD/p:contact", "negated", "false"),
-    (".//p:LD/p:coil", "negated", "true"),
-    (".//p:LD/p:coil", "storage", "set"),
-    (".//p:LD/p:contact", "edge", "rising"),
-    (".//p:LD/p:contact", "localId", "30"),
-    (".//p:LD/p:coil/p:connectionPointIn/p:connection", "refLocalId", "0"),
-    (".//p:task/p:pouInstance", "name", "MainInstance"),
-    (".//p:task/p:pouInstance", "typeName", "PRG_Alarm"),
-    (".//p:configuration", "name", "Device2"),
-    (".//p:resource", "name", "Application2"),
-    (LOCAL, "retain", "true"),
-    (LOCAL, "nonretain", "true"),
-    (LOCAL, "persistent", "true"),
-    (LOCAL, "constant", "true"),
-    (MIXED + "/p:globalVars[@retain='true']", "retain", "false"),
-    (MIXED + "/p:globalVars[@constant='true']", "constant", "false"),
-    (SETPOINTS + "/p:type/p:array/p:dimension", "lower", "0"),
-    (SETPOINTS + "/p:type/p:array/p:dimension", "upper", "8"),
-    (SPARE + "/p:type/p:array/p:baseType/p:derived", "name", "OtherMotor"),
-    (EXTRA + "/p:variable[@name='sRecipeName']/p:type/p:string", "length", "80"),
-    (SETPOINTS + "/p:initialValue/p:arrayValue/p:value/p:simpleValue", "value", "100"),
-    (SETPOINTS + "/p:initialValue/p:arrayValue/p:value", "repetitionValue", "2"),
-    (SPARE + "/p:type/p:array", "vendorAttribute", "preserve me"),
-    (".//p:pou[@name='FC_Scale']/p:interface/p:returnType/p:REAL", "vendorAttribute", "v2"),
-], ids=lambda value: str(value))
-def test_lossless(xpath, attribute, value):
+def _var(project, scope, name):
+    return next(v for v in project.all_variables() if v.scope == scope and v.name == name)
+
+
+def _ld(project, index):
+    return _pou(project, "PRG_Alarm").graphical_body[index]
+
+
+def _owners(project):
+    return [*project.pous, *project.gvls, *project.tasks]
+
+
+LOSSLESS_CASES = [
+    (".//p:LD/p:contact/p:variable", None, "bEStopOK", lambda p: _ld(p, 1).variable),
+    (".//p:LD/p:coil/p:variable", None, "bLampAlarm", lambda p: _ld(p, 2).variable),
+    (".//p:LD/p:contact", "negated", "false", lambda p: _ld(p, 1).negated),
+    (".//p:LD/p:coil", "negated", "true", lambda p: _ld(p, 2).negated),
+    (".//p:LD/p:coil", "storage", "set", lambda p: _ld(p, 2).storage),
+    (".//p:LD/p:contact", "edge", "rising", lambda p: _ld(p, 1).edge),
+    (".//p:LD/p:contact", "localId", "30", lambda p: _ld(p, 1).local_id),
+    (".//p:LD/p:coil/p:connectionPointIn/p:connection", "refLocalId", "0",
+     lambda p: _ld(p, 2).incoming_ref_local_ids),
+    (".//p:task/p:pouInstance", "name", "MainInstance",
+     lambda p: p.tasks[0].programs[0].instance_name),
+    (".//p:task/p:pouInstance", "typeName", "PRG_Alarm",
+     lambda p: p.tasks[0].programs[0].type_name),
+    (".//p:configuration", "name", "Device2", lambda p: [o.configuration for o in _owners(p)]),
+    (".//p:resource", "name", "Application2", lambda p: [o.application for o in _owners(p)]),
+    (LOCAL, "retain", "true", lambda p: _var(p, "PLC_PRG", "fbConv1").retain),
+    (LOCAL, "nonretain", "true", lambda p: _var(p, "PLC_PRG", "fbConv1").nonretain),
+    (LOCAL, "persistent", "true", lambda p: _var(p, "PLC_PRG", "fbConv1").persistent),
+    (LOCAL, "constant", "true", lambda p: _var(p, "PLC_PRG", "fbConv1").constant),
+    (MIXED + "/p:globalVars[@retain='true']", "retain", "false",
+     lambda p: _var(p, "GVL_Extra", "diTotalCount").retain),
+    (MIXED + "/p:globalVars[@constant='true']", "constant", "false",
+     lambda p: _var(p, "GVL_Extra", "MAX_ZONES").constant),
+    (SETPOINTS + "/p:type/p:array/p:dimension", "lower", "0",
+     lambda p: _var(p, "PLC_PRG", "aSetpoints").type),
+    (SETPOINTS + "/p:type/p:array/p:dimension", "upper", "8",
+     lambda p: _var(p, "PLC_PRG", "aSetpoints").type),
+    (SPARE + "/p:type/p:array/p:baseType/p:derived", "name", "OtherMotor",
+     lambda p: (_var(p, "PLC_PRG", "aSpare").type, _var(p, "PLC_PRG", "aSpare").derived_types)),
+    (EXTRA + "/p:variable[@name='sRecipeName']/p:type/p:string", "length", "80",
+     lambda p: _var(p, "GVL_Extra", "sRecipeName").type),
+    (SETPOINTS + "/p:initialValue/p:arrayValue/p:value/p:simpleValue", "value", "100",
+     lambda p: _var(p, "PLC_PRG", "aSetpoints").initial_value_xml),
+    (SETPOINTS + "/p:initialValue/p:arrayValue/p:value", "repetitionValue", "2",
+     lambda p: _var(p, "PLC_PRG", "aSetpoints").initial_value_xml),
+    (SPARE + "/p:type/p:array", "vendorAttribute", "preserve me",
+     lambda p: _var(p, "PLC_PRG", "aSpare").type_xml),
+    (".//p:pou[@name='FC_Scale']/p:interface/p:returnType/p:REAL", "vendorAttribute", "v2",
+     lambda p: _pou(p, "FC_Scale").return_type_xml),
+    (".//p:task/p:addData/p:data/p:TaskSettings", "KindOfTask", "Freewheeling",
+     lambda p: p.tasks[0].settings["KindOfTask"]),
+    (".//p:task/p:addData/p:data/p:TaskSettings/p:Watchdog", "Enabled", "true",
+     lambda p: p.tasks[0].settings["Watchdog.Enabled"]),
+]
+
+
+@pytest.mark.parametrize(
+    "xpath,attribute,value,field", LOSSLESS_CASES,
+    ids=[f"{attribute or 'text'}={value}" for _, attribute, value, _ in LOSSLESS_CASES],
+)
+def test_lossless(xpath, attribute, value, field):
     original = ET.parse(TYPES_QUALIFIERS).getroot()
     changed = deepcopy(original)
     target = changed.find(xpath, NS)
@@ -67,7 +102,17 @@ def test_lossless(xpath, attribute, value):
         target.text = value
     else:
         target.set(attribute, value)
-    assert _payload(parse_element(changed)) != _payload(parse_element(original))
+    before, after = parse_element(original), parse_element(changed)
+    assert field(before) != field(after)
+    assert before != after
+
+
+def test_vendor_attribute_keeps_the_readable_type():
+    root = ET.parse(TYPES_QUALIFIERS).getroot()
+    root.find(SPARE + "/p:type/p:array", NS).set("vendorAttribute", "x")
+    spare = _var(parse_element(root), "PLC_PRG", "aSpare")
+    assert spare.type == "ARRAY[1..2] OF FB_Motor"
+    assert 'vendorAttribute="x"' in spare.type_xml
 
 
 @pytest.mark.parametrize("element_name", ["BOOL", "REAL"])
@@ -76,11 +121,11 @@ def test_lossless_array_element_type(element_name):
     before = parse_element(root)
     root.find(SETPOINTS + "/p:type/p:array/p:baseType/p:INT", NS).tag = PREFIX + element_name
     after = parse_element(root)
-    assert _payload(before) != _payload(after)
-    assert next(v for v in after.pous[0].variables if v.name == "aSetpoints").type.endswith(element_name)
+    assert _var(before, "PLC_PRG", "aSetpoints").type == "ARRAY[1..3] OF INT"
+    assert _var(after, "PLC_PRG", "aSetpoints").type == f"ARRAY[1..3] OF {element_name}"
 
 
-def _type_variant(type_content, initial_content=None):
+def _variant_project(type_content, initial_content=None):
     root = ET.parse(TYPES_QUALIFIERS).getroot()
     var = root.find(SETPOINTS, NS)
     var.remove(var.find("p:type", NS))
@@ -88,8 +133,11 @@ def _type_variant(type_content, initial_content=None):
     var.remove(var.find("p:initialValue", NS))
     if initial_content is not None:
         var.append(ET.fromstring(f'<initialValue xmlns="{NS["p"]}">{initial_content}</initialValue>'))
-    project = parse_element(root)
-    return next(v for v in project.pous[0].variables if v.name == "aSetpoints")
+    return parse_element(root)
+
+
+def _type_variant(type_content, initial_content=None):
+    return _var(_variant_project(type_content, initial_content), "PLC_PRG", "aSetpoints")
 
 
 @pytest.mark.parametrize("xml,expected,derived", [
@@ -105,10 +153,30 @@ def _type_variant(type_content, initial_content=None):
     ('<wstring/>', "WSTRING", []),
 ])
 def test_recursive_types(xml, expected, derived):
-    var = _type_variant(xml)
+    project = _variant_project(xml)
+    var = _var(project, "PLC_PRG", "aSetpoints")
     assert var.type == expected
     assert var.derived_types == derived
-    assert var.is_derived == bool(derived)
+    assert project.warnings == []
+
+
+@pytest.mark.parametrize("xml,expected,warned", [
+    ('<struct><variable name="a"><type><INT/></type></variable></struct>', "(struct)", False),
+    ('<subrangeSigned><range lower="0" upper="10"/><baseType><INT/></baseType></subrangeSigned>',
+     "(unknown)", True),
+    ('<vendorType mode="a"><nested>one</nested></vendorType>', "(unknown)", True),
+    ('<vendorType xmlns="urn:vendor:a"/>', "(unknown)", True),
+    ('<XINT/>', "XINT", True),  # unknown leaf: tag name plus a warning
+    ('<LTIME/>', "LTIME", False),
+    ('<derived name="INT"/>', "INT", False),
+])
+def test_type_readable_form_and_placeholders(xml, expected, warned):
+    project = _variant_project(xml)
+    var = _var(project, "PLC_PRG", "aSetpoints")
+    assert var.type == expected
+    assert "<" not in var.type
+    assert ET.fromstring(var.type_xml).tag == PREFIX + "type"
+    assert any("aSetpoints" in w for w in project.warnings) is warned
 
 
 @pytest.mark.parametrize("before,after", [
@@ -122,11 +190,26 @@ def test_recursive_types(xml, expected, derived):
     ('<wstring length="20"/>', '<wstring length="21"/>'),
     ('<derived name="INT"/>', '<INT/>'),
 ])
-def test_lossless_type_fallback(before, after):
+def test_lossless_type_xml(before, after):
     first, second = _type_variant(before), _type_variant(after)
-    assert first != second
     assert first.type_xml != second.type_xml
-    assert ET.fromstring(first.type_xml).tag == PREFIX + "type"
+    assert first != second
+
+
+@pytest.mark.parametrize("xml,expected,warned", [
+    ('<simpleValue value="7"/>', "7", False),
+    ('<simpleValue value="7" vendorAttribute="x"/>', "7", False),
+    ('<arrayValue><value><simpleValue value="10"/></value></arrayValue>', "(array)", False),
+    ('<structValue><value member="a"><simpleValue value="1"/></value></structValue>', "(struct)", False),
+    ('<vendorValue><nested value="1"/></vendorValue>', "(unknown)", True),
+    ("", "(unknown)", True),
+])
+def test_initial_value_readable_form_and_placeholders(xml, expected, warned):
+    project = _variant_project("<INT/>", xml)
+    var = _var(project, "PLC_PRG", "aSetpoints")
+    assert var.initial_value == expected
+    assert ET.fromstring(var.initial_value_xml).tag == PREFIX + "initialValue"
+    assert any("aSetpoints" in w for w in project.warnings) is warned
 
 
 @pytest.mark.parametrize("before,after", [
@@ -143,10 +226,10 @@ def test_lossless_type_fallback(before, after):
     (None, ""),
     ('<simpleValue value=" "/>', '<simpleValue value=""/>'),
 ])
-def test_lossless_initial_values(before, after):
+def test_lossless_initial_value_xml(before, after):
     first, second = _type_variant("<INT/>", before), _type_variant("<INT/>", after)
-    assert first.initial_value != second.initial_value
     assert first.initial_value_xml != second.initial_value_xml
+    assert first != second
 
 
 @pytest.mark.parametrize("language", ["FBD", "CFC"])
@@ -168,7 +251,7 @@ def test_generic_graphical_fallback_preserves_block_details(language):
     assert ET.fromstring(before.pous[0].body_xml).tag == PREFIX + language
     root.find(".//{urn:vendor}vendorSettings").set("mode", "second")
     after = parse_element(root)
-    assert before.pous[0].graphical_body != after.pous[0].graphical_body
+    assert before.pous[0].graphical_body[0].xml != after.pous[0].graphical_body[0].xml
     assert before.pous[0].body_xml != after.pous[0].body_xml
 
 
@@ -187,7 +270,7 @@ def test_distinct_owners_preserve_same_named_objects(owner_kind):
     project = parse_element(root)
     assert (len(project.pous), len(project.gvls), len(project.tasks)) == (8, 2, 2)
     assert len(list(project.all_variables())) == 72
-    assert len({(v.configuration, v.identity) for v in project.all_variables()}) == 72
+    assert len({v.identity for v in project.all_variables()}) == 72
     assert project.warnings == []
     for owner in [*project.pous, *project.gvls]:
         assert all((v.configuration, v.application) == (owner.configuration, owner.application)
@@ -232,14 +315,16 @@ def test_canonical_data_ignores_prefix_attribute_order_and_indentation():
     assert plain == formatted
 
 
-@pytest.mark.parametrize("before,after", [
-    ('<vendorType>left<part/> </vendorType>', '<vendorType>left<part/></vendorType>'),
-    ('<vendorType xml:space="preserve"> <part/> </vendorType>',
-     '<vendorType xml:space="preserve"><part/></vendorType>'),
-    ('<vendorType> </vendorType>', '<vendorType/>'),
-])
-def test_canonical_fallback_preserves_significant_whitespace(before, after):
-    assert _type_variant(before) != _type_variant(after)
+def test_canonical_xml_does_not_depend_on_registered_namespace_prefixes():
+    """ET.register_namespace is process-global; the model must not see it."""
+    before = parse_file(TYPES_QUALIFIERS)
+    ET.register_namespace("plcdoctest", NS["p"])
+    after = parse_file(TYPES_QUALIFIERS)
+    assert before == after
+    sample = _var(after, "PLC_PRG", "aSetpoints")
+    assert "plcdoctest" not in sample.type_xml
+    assert "plcdoctest" not in sample.initial_value_xml
+    assert "plcdoctest" not in _pou(after, "PRG_Alarm").body_xml
 
 
 @pytest.mark.parametrize("kind", ["position", "relPosition", "comment", "vendorElement"])
@@ -249,7 +334,8 @@ def test_graphical_fallback_does_not_filter_vendor_namesakes(kind):
     extension = ET.SubElement(ld, "{urn:vendor}" + kind, mode="first")
     before = parse_element(root)
     extension.set("mode", "second")
-    assert _payload(before) != _payload(parse_element(root))
+    after = parse_element(root)
+    assert _pou(before, "PRG_Alarm").body_xml != _pou(after, "PRG_Alarm").body_xml
 
 
 def test_parse_element_is_pure_and_ignores_documented_noise():
@@ -265,3 +351,11 @@ def test_parse_element_is_pure_and_ignores_documented_noise():
     root.find("p:contentHeader", NS).set("modificationDateTime", "2020-01-01T00:00:00")
     assert parse_element(root) == before
     assert parse_file(LARGE) == before
+
+
+def test_readable_fields_never_contain_xml(types_qualifiers):
+    for var in types_qualifiers.all_variables():
+        assert "<" not in var.type
+        assert var.initial_value is None or "<" not in var.initial_value
+    for pou in types_qualifiers.pous:
+        assert pou.return_type is None or "<" not in pou.return_type

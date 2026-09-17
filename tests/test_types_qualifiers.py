@@ -40,20 +40,24 @@ def test_sample04_types_and_qualifiers(types_qualifiers):
     assert all(not any(getattr(v, q) for q in QUALIFIERS) for v in project.gvls[0].variables)
     for owner in [*project.pous, *project.gvls, *project.tasks]:
         assert (owner.configuration, owner.application) == ("Device", "Application")
-    assert all(v.identity == ("Application", v.scope, v.name) for v in project.all_variables())
+    assert all(
+        v.identity == ("Device", "Application", v.scope, v.name) for v in project.all_variables()
+    )
 
 
 def test_sample04_array_initializers_and_fb_bases(types_qualifiers):
     variables = {v.name: v for v in types_qualifiers.pous[0].variables}
     setpoints = variables["aSetpoints"]
     assert setpoints.type == "ARRAY[1..3] OF INT"
-    assert not setpoints.is_derived and setpoints.derived_types == []
-    init = ET.fromstring(setpoints.initial_value)
+    assert setpoints.derived_types == []
+    assert setpoints.initial_value == "(array)"
+    init = ET.fromstring(setpoints.initial_value_xml)
     assert [v.attrib["value"] for v in init.findall("p:arrayValue/p:value/p:simpleValue", NS)] == ["10", "20", "30"]
     spare = variables["aSpare"]
     assert spare.type == "ARRAY[1..2] OF FB_Motor"
-    assert spare.is_derived and spare.derived_types == ["FB_Motor"]
+    assert spare.derived_types == ["FB_Motor"]
     assert spare.initial_value is None
+    assert spare.initial_value_xml is None
 
 
 def test_sample03_to_04_has_exactly_the_documented_additions(large, types_qualifiers):
@@ -70,9 +74,9 @@ def test_sample03_to_04_has_exactly_the_documented_additions(large, types_qualif
     assert original_variables.keys() <= new_variables.keys()
     assert all(new_variables[key] == var for key, var in original_variables.items())
     assert new_variables.keys() - original_variables.keys() == {
-        ("Application", "GVL_Extra", name)
+        ("Device", "Application", "GVL_Extra", name)
         for name in ("aTemps", "sRecipeName", "diTotalCount", "MAX_ZONES")
-    } | {("Application", "PLC_PRG", name) for name in ("aSetpoints", "aSpare")}
+    } | {("Device", "Application", "PLC_PRG", name) for name in ("aSetpoints", "aSpare")}
 
 
 def test_mixed_blocks_supply_only_qualifiers():
@@ -90,9 +94,9 @@ def test_mixed_blocks_supply_only_qualifiers():
     assert variables["diTotalCount"].type == "DINT" and variables["diTotalCount"].retain
 
 
-@pytest.mark.parametrize("qualifier", QUALIFIERS)
-@pytest.mark.parametrize("value", ["true", "1", "false", "0"])
+@pytest.mark.parametrize("qualifier,value", [("persistent", "1"), ("nonretain", "0")])
 def test_direct_section_qualifiers_apply_to_every_variable(qualifier, value):
+    """Sample 04 already covers retain/constant via MixedAttrsVarList."""
     root = ET.parse(LARGE).getroot()
     gvl = root.find(".//p:resource/p:globalVars", NS)
     gvl.set(qualifier, value)

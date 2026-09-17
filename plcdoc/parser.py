@@ -15,13 +15,16 @@ Where things live in a CODESYS export (see ``docs/xml-structure.md``):
 Discovery is separated from parsing: every ``pou`` element goes through
 :func:`_parse_pou` and every ``*Vars`` section through :func:`_parse_variables`,
 no matter where it was found.
+
+Readable fields (``Variable.type``, ``Variable.initial_value``,
+``Pou.return_type``) never contain XML. Shapes that have no short readable
+form get a placeholder and the full detail lives in the ``*_xml`` fields.
 """
 
 from __future__ import annotations
 
 import os
 import re
-from copy import deepcopy
 from typing import Iterator
 from xml.etree import ElementTree as ET
 from xml.etree.ElementTree import Element
@@ -38,10 +41,21 @@ PLCOPEN_NS_PREFIX = "http://www.plcopen.org/xml/tc6"
 XHTML_NS = "http://www.w3.org/1999/xhtml"
 CODESYS_POU_DATA = "http://www.3s-software.com/plcopenxml/pou"
 CODESYS_MIXED_ATTRS = "http://www.3s-software.com/plcopenxml/mixedattrsvarlist"
+CODESYS_TASK_SETTINGS = "http://www.3s-software.com/plcopenxml/tasksettings"
+CODESYS_OBJECT_ID = "http://www.3s-software.com/plcopenxml/objectid"
+CODESYS_FBD_ELEMENT_TYPE = "http://www.3s-software.com/plcopenxml/fbdelementtype"
 QUALIFIERS = ("retain", "nonretain", "persistent", "constant")
-ELEMENTARY_TYPES = frozenset(
+
+# Placeholders for readable fields whose detail lives in the matching *_xml field.
+ARRAY_PLACEHOLDER = "(array)"
+STRUCT_PLACEHOLDER = "(struct)"
+UNKNOWN_PLACEHOLDER = "(unknown)"
+
+# IEC 61131-3 elementary type names. Only used to decide whether a leaf type
+# tag deserves a warning; every leaf tag is rendered by its own name.
+IEC_ELEMENTARY_TYPES = frozenset(
     "BOOL BYTE WORD DWORD LWORD SINT INT DINT LINT USINT UINT UDINT ULINT "
-    "REAL LREAL TIME LTIME DATE LDATE DT LDT TOD LTOD CHAR WCHAR "
+    "REAL LREAL TIME LTIME DATE LDATE DT LDT TOD LTOD CHAR WCHAR STRING WSTRING "
     "ANY ANY_DERIVED ANY_ELEMENTARY ANY_MAGNITUDE ANY_NUM ANY_REAL "
     "ANY_INT ANY_BIT ANY_STRING ANY_DATE".split()
 )
@@ -203,8 +217,31 @@ def _collect_tasks(root: Element, ns: str, project: Project) -> None:
                     )
                     for inst in elem.findall(_q(ns, "pouInstance"))
                 ],
+                settings=_task_settings(elem, ns),
             )
             project.tasks.append(task)
+
+
+def _task_settings(task: Element, ns: str) -> dict[str, str]:
+    """CODESYS ``TaskSettings`` flattened to ``{"KindOfTask": "Cyclic", "Watchdog.Enabled": "false"}``."""
+    settings: dict[str, str] = {}
+    for data in _data_elements(task, ns, CODESYS_TASK_SETTINGS):
+        for node in data:
+            if not isinstance(node.tag, str):
+                continue
+            settings.update(node.attrib)
+            for child in node:
+                if isinstance(child.tag, str):
+                    prefix = _local(child.tag)
+                    settings.update({f"{prefix}.{key}": value for key, value in child.attrib.items()})
+    return settings
+
+
+def _data_elements(elem: Element, ns: str, name: str) -> Iterator[Element]:
+    """Direct ``addData/data[@name=name]`` children of *elem*."""
+    for data in elem.findall("/".join([_q(ns, "addData"), _q(ns, "data")])):
+        if data.get("name") == name:
+            yield data
 
 
 # --------------------------------------------------------------------------- #
@@ -220,10 +257,13 @@ def _parse_pou(
     pou = Pou(
         name=name, pou_type=elem.get("pouType", ""),
         configuration=configuration, application=application,
+        comment=_documentation(elem, ns),
     )
 
     interface = elem.find(_q(ns, "interface"))
     if interface is not None:
+        if not pou.comment:
+            pou.comment = _documentation(interface, ns)
         for child in interface:
             local = _local(child.tag)
             if local == "returnType":
@@ -278,7 +318,6 @@ def _parse_variables(
                 section=section,
                 configuration=configuration,
                 application=application,
-                is_derived=bool(derived_types),
                 derived_types=derived_types,
                 type_xml=_canonical_xml(type_elem) if type_elem is not None else None,
                 initial_value_xml=_canonical_xml(init) if init is not None else None,
@@ -298,9 +337,7 @@ def _qualifiers(elem: Element) -> dict[str, bool]:
 def _variable_qualifiers(section: Element, ns: str) -> dict[str, dict[str, bool]]:
     """MixedAttrsVarList contains qualifier overlays, never new declarations."""
     result = {}
-    for data in section.findall(f"{_q(ns, 'addData')}/{_q(ns, 'data')}"):
-        if data.get("name") != CODESYS_MIXED_ATTRS:
-            continue
+    for data in _data_elements(section, ns, CODESYS_MIXED_ATTRS):
         for mixed in data.findall(_q(ns, "MixedAttrsVarList")):
             for block in mixed.findall(_q(ns, "globalVars")):
                 if block.get("name") != section.get("name"):
@@ -311,40 +348,53 @@ def _variable_qualifiers(section: Element, ns: str) -> dict[str, dict[str, bool]
 
 
 def _type_name(container: Element | None, ns: str, where: str, warnings: list[str]) -> str:
-    """Readable elementary/derived/array/string types; canonical XML otherwise."""
+    """Readable type from a ``<type>``, ``<returnType>`` or ``<baseType>`` element.
+
+    ``BOOL``, ``CTU``, ``STRING(20)``, ``ARRAY[1..4] OF REAL``. Shapes without a
+    short readable form become ``(struct)`` or ``(unknown)``; the canonical XML
+    in the matching ``*_xml`` field keeps the detail.
+    """
     if container is None:
         return ""
-    if len(container) != 1:
-        warnings.append(f"{where}: nonstandard type preserved as canonical XML")
-        return _canonical_xml(container)
-    return _render_type(container[0], ns, where, warnings)
+    children = [child for child in container if isinstance(child.tag, str)]
+    if len(children) != 1:
+        warnings.append(
+            f"{where}: type element with {len(children)} children recorded as {UNKNOWN_PLACEHOLDER}"
+        )
+        return UNKNOWN_PLACEHOLDER
+    return _render_type(children[0], ns, where, warnings)
 
 
 def _render_type(child: Element, ns: str, where: str, warnings: list[str]) -> str:
-    local = _local(child.tag)
-    if child.tag == _q(ns, local):
-        if local in ELEMENTARY_TYPES and not child.attrib and len(child) == 0:
-            return local
-        if local == "derived" and set(child.attrib) == {"name"} and len(child) == 0:
-            return child.attrib["name"]
-        if (
-            local in ("string", "wstring")
-            and not (child.attrib.keys() - {"length"}) and len(child) == 0
-        ):
-            length = child.get("length")
-            return local.upper() + (f"({length})" if length is not None else "")
-        if local == "array" and not child.attrib:
-            dimensions = child.findall(_q(ns, "dimension"))
-            bases = child.findall(_q(ns, "baseType"))
-            if (
-                dimensions and len(bases) == 1 and len(child) == len(dimensions) + 1
-                and all(set(d.attrib) == {"lower", "upper"} and len(d) == 0 for d in dimensions)
-            ):
-                bounds = ", ".join(f"{d.attrib['lower']}..{d.attrib['upper']}" for d in dimensions)
-                base = _type_name(bases[0], ns, where, warnings)
-                return f"ARRAY[{bounds}] OF {base}"
-    warnings.append(f"{where}: type <{local}> preserved as canonical XML")
-    return _canonical_xml(child)
+    namespace, local = _split(child.tag)
+    if namespace != ns:
+        warnings.append(f"{where}: vendor type <{local}> recorded as {UNKNOWN_PLACEHOLDER}")
+        return UNKNOWN_PLACEHOLDER
+    if local == "derived":
+        name = child.get("name")
+        if name:
+            return name
+        warnings.append(f"{where}: derived type without a name recorded as {UNKNOWN_PLACEHOLDER}")
+        return UNKNOWN_PLACEHOLDER
+    if local in ("string", "wstring"):
+        length = child.get("length")
+        return local.upper() + (f"({length})" if length is not None else "")
+    if local == "array":
+        dimensions = child.findall(_q(ns, "dimension"))
+        base = child.find(_q(ns, "baseType"))
+        if dimensions and base is not None:
+            bounds = ", ".join(f"{d.get('lower', '?')}..{d.get('upper', '?')}" for d in dimensions)
+            return f"ARRAY[{bounds}] OF {_type_name(base, ns, where, warnings)}"
+        warnings.append(f"{where}: array without dimension/baseType recorded as {ARRAY_PLACEHOLDER}")
+        return ARRAY_PLACEHOLDER
+    if local == "struct":
+        return STRUCT_PLACEHOLDER
+    if len(child) == 0:
+        if local not in IEC_ELEMENTARY_TYPES:
+            warnings.append(f"{where}: non-IEC type <{local}> recorded by tag name")
+        return local
+    warnings.append(f"{where}: type <{local}> recorded as {UNKNOWN_PLACEHOLDER}")
+    return UNKNOWN_PLACEHOLDER
 
 
 def _initial_value(
@@ -353,17 +403,17 @@ def _initial_value(
     init = var_elem.find(_q(ns, "initialValue"))
     if init is None:
         return None
-    if len(init) == 1:
-        value = init[0]
-        if (
-            value.tag == _q(ns, "simpleValue")
-            and set(value.attrib) == {"value"} and len(value) == 0
-        ):
+    children = [child for child in init if isinstance(child.tag, str)]
+    if len(children) == 1:
+        value = children[0]
+        if value.tag == _q(ns, "simpleValue") and "value" in value.attrib:
             return value.attrib["value"]
-        if value.tag in (_q(ns, "arrayValue"), _q(ns, "structValue")):
-            return _canonical_xml(init)
-    warnings.append(f"{where}: nonstandard initial value preserved as canonical XML")
-    return _canonical_xml(init)
+        if value.tag == _q(ns, "arrayValue"):
+            return ARRAY_PLACEHOLDER
+        if value.tag == _q(ns, "structValue"):
+            return STRUCT_PLACEHOLDER
+    warnings.append(f"{where}: initial value recorded as {UNKNOWN_PLACEHOLDER}, see initial_value_xml")
+    return UNKNOWN_PLACEHOLDER
 
 
 def _documentation(elem: Element, ns: str) -> str:
@@ -412,6 +462,7 @@ def _parse_body(body: Element, ns: str, pou: Pou) -> None:
 
 
 def _graphical_noise(elem: Element) -> bool:
+    """Documented layout/GUID/network-title noise inside graphical bodies."""
     if not isinstance(elem.tag, str):  # XML comments passed via parse_element
         return True
     namespace, local = _split(elem.tag)
@@ -419,52 +470,68 @@ def _graphical_noise(elem: Element) -> bool:
         return False  # A vendor's similarly named element may carry real semantics.
     if local in ("position", "relPosition", "comment"):
         return True
-    if local == "data" and elem.get("name") == "http://www.3s-software.com/plcopenxml/objectid":
+    if local == "data" and elem.get("name") == CODESYS_OBJECT_ID:
         return True
     if local == "vendorElement":
-        for data in elem.findall(f"{_q(namespace, 'addData')}/{_q(namespace, 'data')}"):
-            if data.get("name") == "http://www.3s-software.com/plcopenxml/fbdelementtype":
-                return any(
-                    isinstance(child.tag, str) and _local(child.tag) == "ElementType"
-                    and (child.text or "").strip() == "networktitle" for child in data
-                )
+        for data in _data_elements(elem, namespace, CODESYS_FBD_ELEMENT_TYPE):
+            return any(
+                isinstance(child.tag, str) and _local(child.tag) == "ElementType"
+                and (child.text or "").strip() == "networktitle" for child in data
+            )
     return False
 
 
+_XML_NS = "http://www.w3.org/XML/1998/namespace"
+
+
 def _canonical_xml(elem: Element, *, graphical: bool = False) -> str:
-    """Namespace/attribute-order independent XML, without indentation or tail.
+    """Canonical XML (C14N 2.0) of one element, independent of source formatting.
 
-    Preserve leaf text and significant mixed-content whitespace. Only graphical
-    serialization removes the explicitly documented layout/network/GUID noise.
-    No Element objects escape into the model, and the caller's tree is untouched.
+    Namespace prefixes are rewritten to ``n0``, ``n1``, ... in document order so
+    the text does not depend on the process-wide ElementTree namespace registry
+    (``ET.register_namespace``), attribute order is sorted and formatting
+    whitespace is stripped. Graphical bodies also lose the documented noise
+    elements. The caller's tree is never modified and no Element escapes into
+    the model.
+
+    The prefixes are assigned here rather than with ``canonicalize(rewrite_prefixes=True)``
+    because CPython's rewriter emits ``xmlns:n1=""`` next to unprefixed
+    attributes, which is not well-formed XML.
     """
-    clone = deepcopy(elem)
+    prefixes: dict[str, str] = {}
+    fragment = _rebuild(elem, graphical, prefixes)
+    for namespace, prefix in prefixes.items():
+        fragment.set(f"xmlns:{prefix}", namespace)
+    return ET.canonicalize(ET.tostring(fragment, encoding="unicode"), strip_text=True)
 
-    def clean(node: Element, preserve_space: bool = False) -> None:
-        space = node.get("{http://www.w3.org/XML/1998/namespace}space")
-        if space is not None:
-            preserve_space = space == "preserve"
-        # Strip formatting only in element-only content, never in mixed text or
-        # in an xml:space="preserve" subtree. Tails belong to the parent.
-        element_only = len(node) > 0 and not preserve_space and not any(
-            text and text.strip() for text in [node.text, *(child.tail for child in node)]
-        )
-        for child in list(node):
-            if not isinstance(child.tag, str) or (graphical and _graphical_noise(child)):
-                node.remove(child)
-            else:
-                clean(child, preserve_space)
-        if element_only:
-            node.text = None
-            for child in node:
-                child.tail = None
-        attributes = sorted(node.attrib.items())
-        node.attrib.clear()
-        node.attrib.update(attributes)
 
-    clean(clone)
-    clone.tail = None
-    return ET.canonicalize(ET.tostring(clone, encoding="unicode"))
+def _prefixed(tag: str, prefixes: dict[str, str]) -> str:
+    """``{ns}local`` -> ``n0:local`` with prefixes numbered in order of first use."""
+    namespace, local = _split(tag)
+    if not namespace:
+        return local
+    if namespace == _XML_NS:
+        return f"xml:{local}"
+    return f"{prefixes.setdefault(namespace, f'n{len(prefixes)}')}:{local}"
+
+
+def _rebuild(elem: Element, graphical: bool, prefixes: dict[str, str]) -> Element:
+    # A filtered rebuild instead of deepcopy: it drops the root's tail (which
+    # tostring would emit after the element), XML comments and, for graphical
+    # bodies, the noise elements. canonicalize's exclude_tags cannot filter by
+    # attribute, which the objectid/network-title noise needs.
+    copy = Element(
+        _prefixed(elem.tag, prefixes),
+        {_prefixed(key, prefixes): value for key, value in elem.attrib.items()},
+    )
+    copy.text = elem.text
+    for child in elem:
+        if not isinstance(child.tag, str) or (graphical and _graphical_noise(child)):
+            continue
+        child_copy = _rebuild(child, graphical, prefixes)
+        child_copy.tail = child.tail
+        copy.append(child_copy)
+    return copy
 
 
 # --------------------------------------------------------------------------- #

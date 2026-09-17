@@ -136,8 +136,9 @@ Sample 03 → 04 is therefore also a realistic "upgrade" pair for diff tests.
 - Nested/multidimensional arrays and `wstring length="n"` → `WSTRING(n)` have
   synthetic regression coverage; they are not present in sample 04.
 - `type_xml` and `initial_value_xml` preserve canonical declaration details.
-  Types not rendered explicitly and compound initializers (`arrayValue`,
-  `structValue`) remain canonical XML rather than being reduced to a tag or `None`.
+  The readable fields never contain XML: a compound initializer shows `(array)`
+  or `(struct)`, a type without a short form shows `(struct)` or `(unknown)`, and
+  an unknown leaf type tag shows its tag name with a warning.
 
 ### RETAIN / CONSTANT in a global list (important)
 `GVL_Extra` declares three blocks: `VAR_GLOBAL`, `VAR_GLOBAL RETAIN`, `VAR_GLOBAL CONSTANT`.
@@ -164,13 +165,18 @@ Consequences for the parser:
   `resource name="Application"`. These names are retained on POUs, GVLs, tasks
   and variables. Project-level objects have no configuration/application;
   configuration-level GVLs have a configuration but no application.
-- Variable identity is `(application, scope, name)` within a configuration.
+- Variable identity is `(configuration, application, scope, name)`.
   Identical same-name POUs deduplicate only within the same owner. Definitions
   in different resources or at project scope remain independent. Conflicting
   definitions within one owner are preserved with a warning.
 - All sample task instances use `name="PLC_PRG" typeName=""`. Store both the
   instance name and resolved type name, falling back to `name` when `typeName`
   is empty. Separate instance/type names and multiple owners have synthetic tests.
+- `task/addData/data[@name=".../tasksettings"]/TaskSettings` holds the task kind,
+  interval text and watchdog. Kept flattened in `Task.settings`
+  (`KindOfTask`, `Interval`, `Watchdog.Enabled`, ...).
+- `pou/documentation` (or `interface/documentation`) is the POU comment, kept in
+  `Pou.comment`. No sample POU has one.
 - POU-interface `globalVars` belongs to that POU. Only direct
   configuration/resource `globalVars` is a project GVL.
 

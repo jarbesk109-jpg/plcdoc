@@ -57,6 +57,11 @@ def test_json_output_is_deterministic_and_sorted(capsys):
             "interval": "PT0.02S", "name": "MainTask", "priority": 1,
             "configuration": "Device", "application": "Application",
             "programs": [{"instance_name": "PLC_PRG", "type_name": "PLC_PRG"}],
+            "settings": {
+                "KindOfTask": "Cyclic", "Interval": "t#20ms", "IntervalUnit": "ms",
+                "WithinSPSTimeSlicing": "true", "Watchdog.Enabled": "false",
+                "Watchdog.TimeUnit": "ms", "Watchdog.Sensitivity": "1",
+            },
         }
     ]
     assert data["warnings"] == []
@@ -120,7 +125,18 @@ def test_sample04_json_exposes_lossless_model(capsys):
     assert alarm["body_xml"] and contact["xml"]
 
 
-def test_markdown_renders_canonical_xml_as_text():
-    table = markdown_table(("Initial",), [('<simpleValue value="A&amp;B"/>',)])
-    assert '&lt;simpleValue value="A&amp;amp;B"/&gt;' in table
-    assert "<simpleValue" not in table
+def test_markdown_keeps_comment_text_verbatim():
+    table = markdown_table(("Comment",), [("T > 5 & x < 10",)])
+    assert "| T > 5 & x < 10 |" in table
+
+
+def test_markdown_escapes_pipes_and_html_openers_only():
+    table = markdown_table(("Comment",), [("a|b <b>bold</b> <!-- c --> 1 < 2",)])
+    assert "| a\\|b \\<b>bold\\</b> \\<!-- c --> 1 < 2 |" in table
+
+
+def test_sample04_table_shows_placeholders_not_xml(capsys):
+    assert main(["parse", str(TYPES_QUALIFIERS)]) == 0
+    out = capsys.readouterr().out
+    assert "| PLC_PRG   | local   | aSetpoints    | ARRAY[1..3] OF INT      |         | (array) |" in out
+    assert "<" not in out and "&lt;" not in out
