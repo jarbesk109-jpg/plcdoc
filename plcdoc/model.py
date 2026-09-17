@@ -75,10 +75,25 @@ class Variable:
     type: str  # "BOOL", "INT", "CTU", "FB_Motor", ...
     scope: str  # owning POU or global variable list, e.g. "PLC_PRG", "GVL_IO"
     section: str  # "local", "input", "output", "inout", "temp", "external", "global", ...
-    is_derived: bool = False  # True when the type came from type/derived (FB instance, user type)
+    is_derived: bool = False  # Includes derived bases inside arrays/other compound types.
     address: str | None = None  # "%IX0.0" or None when not mapped
     initial_value: str | None = None
     comment: str = ""  # stripped, "" when absent
+    configuration: str | None = None
+    application: str | None = None  # resource name; None for project/configuration declarations
+    retain: bool = False
+    nonretain: bool = False
+    persistent: bool = False
+    constant: bool = False
+    # Canonical XML keeps details that the readable type/value may not express.
+    type_xml: str | None = None
+    initial_value_xml: str | None = None
+    derived_types: list[str] = field(default_factory=list)
+
+    @property
+    def identity(self) -> tuple[str | None, str, str]:
+        """Variable key within a configuration: (application, scope, name)."""
+        return (self.application, self.scope, self.name)
 
     @property
     def parsed_address(self) -> Address | None:
@@ -97,6 +112,20 @@ class Variable:
 
 
 @dataclass
+class GraphicalElement:
+    """One graphical instruction, plus canonical XML for unmodelled details."""
+
+    kind: str
+    local_id: str | None = None
+    variable: str | None = None
+    negated: bool | None = None
+    storage: str | None = None
+    edge: str | None = None
+    incoming_ref_local_ids: list[str] = field(default_factory=list)
+    xml: str = ""
+
+
+@dataclass
 class Pou:
     """A program organisation unit: program, functionBlock or function."""
 
@@ -106,12 +135,25 @@ class Pou:
     variables: list[Variable] = field(default_factory=list)
     body_language: str | None = None  # "ST", "LD", "FBD", ... or None when no body
     body_text: str | None = None  # textual body (LF line endings); None for graphical bodies
+    configuration: str | None = None
+    application: str | None = None
+    return_type_xml: str | None = None
+    graphical_body: list[GraphicalElement] = field(default_factory=list)
+    body_xml: str | None = None  # canonical graphical body, including vendor/FBD/CFC details
 
 
 @dataclass
 class GlobalVarList:
     name: str
     variables: list[Variable] = field(default_factory=list)
+    configuration: str | None = None
+    application: str | None = None
+
+
+@dataclass(frozen=True)
+class PouInstance:
+    instance_name: str
+    type_name: str  # falls back to instance_name when CODESYS leaves typeName empty
 
 
 @dataclass
@@ -119,7 +161,9 @@ class Task:
     name: str
     interval: str | None = None
     priority: int | None = None
-    programs: list[str] = field(default_factory=list)
+    programs: list[PouInstance] = field(default_factory=list)
+    configuration: str | None = None
+    application: str | None = None
 
 
 @dataclass

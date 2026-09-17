@@ -15,14 +15,17 @@ class IoRow:
     type: str
     scope: str
     comment: str
+    configuration: str | None = None
+    application: str | None = None
 
 
 def _io_sort_key(var: Variable) -> tuple:
+    owner = (var.configuration or "", var.application or "", var.scope, var.name)
     parsed = var.parsed_address
     if parsed is None:
         # Unparseable addresses go last, in plain string order.
-        return (1, var.address or "", var.scope, var.name)
-    return (0, parsed.sort_key, var.scope, var.name)
+        return (1, var.address or "", owner)
+    return (0, parsed.sort_key, owner)
 
 
 def io_table(project: Project) -> list[IoRow]:
@@ -37,6 +40,8 @@ def io_table(project: Project) -> list[IoRow]:
                 type=var.type,
                 scope=var.scope,
                 comment=var.comment,
+                configuration=var.configuration,
+                application=var.application,
             )
         )
     return rows

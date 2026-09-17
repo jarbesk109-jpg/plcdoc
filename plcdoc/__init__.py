@@ -3,7 +3,9 @@
 from plcdoc.model import (
     Address,
     GlobalVarList,
+    GraphicalElement,
     Pou,
+    PouInstance,
     Project,
     Task,
     Variable,
@@ -16,8 +18,10 @@ __version__ = "0.0.1"
 __all__ = [
     "Address",
     "GlobalVarList",
+    "GraphicalElement",
     "ParseError",
     "Pou",
+    "PouInstance",
     "Project",
     "Task",
     "Variable",

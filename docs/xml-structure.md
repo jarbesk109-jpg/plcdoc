@@ -21,7 +21,7 @@ project
 ├── instances/configurations/configuration[@name=Device]
 │   ├── resource[@name=Application]
 │   │   ├── task            name, interval, priority
-│   │   │   └── pouInstance name = program called by this task
+│   │   │   └── pouInstance name = instance; typeName = POU type (empty here)
 │   │   └── addData
 │   │       ├── data[@name=".../plcopenxml/pou"]        → pou  ← the actual program
 │   │       └── data[@name=".../plcopenxml/libraries"]  → Libraries
@@ -102,8 +102,77 @@ Larger export: a global variable list, a function block, a function and a ladder
 - Also contains an XML comment (`<!--ObjectVersion: LD1-->`), a network `comment` and a `vendorElement` (network title). Ignore them.
 - All `position` values are `0,0`: CODESYS does not export layout, so a drawing cannot be rebuilt from positions.
 
-For the first version: collect the variable names used by contacts and coils (cross-reference),
-and do not try to render ladder diagrams.
+M2.1 preserves structured instructions (kind, local ID, variable, negation,
+storage, edge and incoming connection IDs), plus canonical XML for other body
+details. M3 can use contact/coil variables for cross-reference; M4 can detect
+wiring or instruction changes. FBD/CFC use the same generic preservation path;
+they have synthetic coverage, but no real export is available yet. No diagram
+rendering is attempted.
+
+## Findings from `samples/04_types_qualifiers.xml`
+Same project as sample 03, plus a second global list `GVL_Extra` and two array variables in `PLC_PRG`.
+Sample 03 → 04 is therefore also a realistic "upgrade" pair for diff tests.
+
+### Arrays, strings, array initial values
+```xml
+<type>
+  <array>
+    <dimension lower="1" upper="4" />
+    <baseType><REAL /></baseType>              <!-- or <derived name="FB_Motor" /> -->
+  </array>
+</type>
+<type><string length="20" /></type>            <!-- STRING(20) -->
+<initialValue>
+  <arrayValue>
+    <value><simpleValue value="10" /></value>
+    <value><simpleValue value="20" /></value>
+  </arrayValue>
+</initialValue>
+```
+- `aSpare : ARRAY[1..2] OF FB_Motor` is an array of FB instances: the program tree must look inside `array/baseType`.
+- Exact readable types in sample 04: `aTemps` is `ARRAY[1..4] OF REAL`,
+  `sRecipeName` is `STRING(20)`, `aSetpoints` is `ARRAY[1..3] OF INT`, and
+  `aSpare` is `ARRAY[1..2] OF FB_Motor`. `aSetpoints` has initial values 10, 20, 30.
+- Nested/multidimensional arrays and `wstring length="n"` → `WSTRING(n)` have
+  synthetic regression coverage; they are not present in sample 04.
+- `type_xml` and `initial_value_xml` preserve canonical declaration details.
+  Types not rendered explicitly and compound initializers (`arrayValue`,
+  `structValue`) remain canonical XML rather than being reduced to a tag or `None`.
+
+### RETAIN / CONSTANT in a global list (important)
+`GVL_Extra` declares three blocks: `VAR_GLOBAL`, `VAR_GLOBAL RETAIN`, `VAR_GLOBAL CONSTANT`.
+CODESYS exports it as:
+- **one** top-level `globalVars name="GVL_Extra"` holding all four variables, **without** any `retain`/`constant` attribute;
+- the real split is only inside
+  `globalVars/addData/data[@name="http://www.3s-software.com/plcopenxml/mixedattrsvarlist"]/MixedAttrsVarList`,
+  which contains several `globalVars name="GVL_Extra"` elements, each with its own `retain="true"` or `constant="true"`.
+
+Consequences for the parser:
+- Read the variable list from the top-level `globalVars`, then take qualifiers from `MixedAttrsVarList` when present.
+  Reading only the top level loses RETAIN and CONSTANT without any error.
+- The nested `globalVars` inside `MixedAttrsVarList` are **not** separate lists. The file has 5 `globalVars` elements but only 2 real lists.
+- A list with a single block (`GVL_IO`) has no `MixedAttrsVarList`.
+- Expected qualifiers: `diTotalCount` is RETAIN; `MAX_ZONES` is CONSTANT;
+  `aTemps`, `sRecipeName` and all of `GVL_IO` have none. NONRETAIN and PERSISTENT
+  use the same attribute handling, with synthetic coverage.
+- Sample 04 has exactly 2 GVLs, 4 POUs, 42 variables and 20 addressed variables.
+  The complete second diff-pair expectation is in `samples/CHANGES_03_04.md`.
+
+## Ownership and task bindings (M2.1)
+
+- All four real exports have `configuration name="Device"` and
+  `resource name="Application"`. These names are retained on POUs, GVLs, tasks
+  and variables. Project-level objects have no configuration/application;
+  configuration-level GVLs have a configuration but no application.
+- Variable identity is `(application, scope, name)` within a configuration.
+  Identical same-name POUs deduplicate only within the same owner. Definitions
+  in different resources or at project scope remain independent. Conflicting
+  definitions within one owner are preserved with a warning.
+- All sample task instances use `name="PLC_PRG" typeName=""`. Store both the
+  instance name and resolved type name, falling back to `name` when `typeName`
+  is empty. Separate instance/type names and multiple owners have synthetic tests.
+- POU-interface `globalVars` belongs to that POU. Only direct
+  configuration/resource `globalVars` is a project GVL.
 
 ## Useful extras
 - `task`: task name, cycle (`interval="PT0.02S"`), priority, and which program it calls → program tree.

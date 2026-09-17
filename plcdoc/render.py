@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from html import escape
 from typing import Sequence
 
 
 def _cell(value: object) -> str:
     if value is None:
         return ""
-    return str(value).replace("|", "\\|").replace("\n", " ")
+    # Canonical XML type/value fallbacks must display as text in Markdown.
+    return escape(str(value), quote=False).replace("|", "\\|").replace("\n", " ")
 
 
 def markdown_table(headers: Sequence[str], rows: Sequence[Sequence[object]]) -> str:

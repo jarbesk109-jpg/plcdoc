@@ -9,7 +9,7 @@ import pytest
 from plcdoc.cli import main
 from plcdoc.render import markdown_table
 
-from conftest import LARGE, SMALL_V1
+from conftest import LARGE, SMALL_V1, TYPES_QUALIFIERS
 
 
 def test_parse_prints_io_table_and_variables(capsys):
@@ -53,7 +53,11 @@ def test_json_output_is_deterministic_and_sorted(capsys):
     assert [v["name"] for v in pou["variables"]][:3] == ["bStart", "bStop", "bSensor"]
     assert pou["variables"][0]["comment"] == "Nút Start (NO)"  # not \\u-escaped
     assert data["tasks"] == [
-        {"interval": "PT0.02S", "name": "MainTask", "priority": 1, "programs": ["PLC_PRG"]}
+        {
+            "interval": "PT0.02S", "name": "MainTask", "priority": 1,
+            "configuration": "Device", "application": "Application",
+            "programs": [{"instance_name": "PLC_PRG", "type_name": "PLC_PRG"}],
+        }
     ]
     assert data["warnings"] == []
 
@@ -94,3 +98,29 @@ def test_markdown_table_escapes_pipes_and_none():
         "| x\\|y       |   |",
         "| long value | 1 |",
     ]
+
+
+def test_sample04_json_exposes_lossless_model(capsys):
+    assert main(["parse", str(TYPES_QUALIFIERS), "--json"]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    data = json.loads(captured.out)
+    assert len(data["gvls"]) == 2
+    extra = {v["name"]: v for v in data["gvls"][1]["variables"]}
+    assert extra["diTotalCount"]["retain"] and extra["MAX_ZONES"]["constant"]
+    assert extra["aTemps"]["type"] == "ARRAY[1..4] OF REAL"
+    prg = data["pous"][0]
+    spare = next(v for v in prg["variables"] if v["name"] == "aSpare")
+    assert spare["derived_types"] == ["FB_Motor"]
+    assert spare["configuration"] == "Device" and spare["application"] == "Application"
+    alarm = next(p for p in data["pous"] if p["name"] == "PRG_Alarm")
+    contact = next(n for n in alarm["graphical_body"] if n["kind"] == "contact")
+    assert contact["variable"] == "bDoorClosed" and contact["negated"]
+    assert contact["incoming_ref_local_ids"] == ["0"]
+    assert alarm["body_xml"] and contact["xml"]
+
+
+def test_markdown_renders_canonical_xml_as_text():
+    table = markdown_table(("Initial",), [('<simpleValue value="A&amp;B"/>',)])
+    assert '&lt;simpleValue value="A&amp;amp;B"/&gt;' in table
+    assert "<simpleValue" not in table

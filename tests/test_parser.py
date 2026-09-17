@@ -2,7 +2,7 @@
 
 import pytest
 
-from plcdoc import ParseError, parse_bytes, parse_file, parse_string
+from plcdoc import ParseError, PouInstance, parse_bytes, parse_file, parse_string
 from plcdoc.parser import KNOWN_SECTIONS
 
 from conftest import SMALL_V1
@@ -84,7 +84,8 @@ def test_small_task(small):
     assert task.name == "MainTask"
     assert task.interval == "PT0.02S"
     assert task.priority == 1
-    assert task.programs == ["PLC_PRG"]
+    assert task.programs == [PouInstance("PLC_PRG", "PLC_PRG")]
+    assert (task.configuration, task.application) == ("Device", "Application")
 
 
 def test_small_v2_reflects_known_changes(small_v2):
@@ -95,6 +96,22 @@ def test_small_v2_reflects_known_changes(small_v2):
     assert v["iPreset"].initial_value == "20"
     assert v["bLampDone"].address == "%QX0.3"
     assert v["fbCounter"].comment == "Bộ đếm sản phẩm"
+
+
+def test_small_v1_v2_preserves_every_st_change(small, small_v2):
+    before = small.pous[0].body_text
+    after = small_v2.pous[0].body_text
+    assert before == (
+        "fbCounter(CU := bSensor AND bMotor, RESET := bReset, PV := iPreset,\n"
+        "          Q => bLampDone, CV => iCount);\n\n"
+        "bMotor   := (bStart OR bMotor) AND bStop AND NOT bLampDone;\n"
+        "bLampRun := bMotor;"
+    )
+    assert after == (
+        "fbCounter(CU := bSensorIn AND bMotor, RESET := bReset, PV := iPreset,\n"
+        "          Q => bLampDone, CV => iCount);\n\n"
+        "bMotor := (bStart OR bMotor) AND bStop AND bEStop AND NOT bLampDone;"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -163,14 +180,27 @@ def test_large_fc_scale_return_type(large):
         ("rMax", "REAL", "input"),
     ]
     assert fc.body_language == "ST"
+    assert fc.body_text == "FC_Scale := rMin + (INT_TO_REAL(iRaw) / 27648.0) * (rMax - rMin);"
 
 
-def test_large_prg_alarm_is_ladder_without_text(large):
+def test_large_prg_alarm_preserves_ladder_semantics(large):
     prg = next(p for p in large.pous if p.name == "PRG_Alarm")
     assert prg.pou_type == "program"
     assert prg.body_language == "LD"
     assert prg.body_text is None
     assert prg.variables == []
+    assert [node.kind for node in prg.graphical_body] == [
+        "leftPowerRail", "contact", "coil", "rightPowerRail",
+    ]
+    contact, coil = prg.graphical_body[1:3]
+    assert (contact.local_id, contact.variable, contact.negated, contact.storage, contact.edge) == (
+        "3", "bDoorClosed", True, "none", "none",
+    )
+    assert contact.incoming_ref_local_ids == ["0"]
+    assert (coil.local_id, coil.variable, coil.negated, coil.storage) == ("4", "bHorn", False, "none")
+    assert coil.incoming_ref_local_ids == ["3"]
+    assert "bDoorClosed" in prg.body_xml and "bHorn" in prg.body_xml
+    assert "position" not in prg.body_xml and "networktitle" not in prg.body_xml
 
 
 def test_large_plc_prg_uses_fb_instances(large):
@@ -179,6 +209,9 @@ def test_large_plc_prg_uses_fb_instances(large):
     assert v["fbConv1"].type == "FB_Motor"
     assert v["fbConv1"].is_derived is True
     assert v["bLineReady"].type == "BOOL"
+    assert "rTankLevel := FC_Scale(iRaw := iTankLevelRaw, rMin := 0.0, rMax := 100.0);" in prg.body_text
+    assert "rTemp      := FC_Scale(iRaw := iTempRaw, rMin := -20.0, rMax := 150.0);" in prg.body_text
+    assert prg.body_text.endswith("PRG_Alarm();")
 
 
 def test_large_all_variables_gvl_first_then_pous(large):
@@ -190,7 +223,9 @@ def test_large_all_variables_gvl_first_then_pous(large):
 
 
 def test_large_task(large):
-    assert [(t.name, t.programs) for t in large.tasks] == [("MainTask", ["PLC_PRG"])]
+    assert [(t.name, t.programs) for t in large.tasks] == [
+        ("MainTask", [PouInstance("PLC_PRG", "PLC_PRG")]),
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -232,8 +267,8 @@ def test_synthetic_pou_in_standard_types_pous_location():
     assert project.warnings == []
 
 
-def test_synthetic_duplicate_pou_across_locations_keeps_first_and_warns():
-    """SYNTHETIC: same POU name in types/pous and in the CODESYS addData location."""
+def test_synthetic_project_pou_and_resource_pou_have_separate_ownership():
+    """A resource-local POU must not be deduplicated against a project POU."""
     xml = (
         _SYNTHETIC_HEAD
         + "<types><pous>" + _pou("P1", var="fromStandard") + "</pous></types>"
@@ -244,10 +279,13 @@ def test_synthetic_duplicate_pou_across_locations_keeps_first_and_warns():
         + _SYNTHETIC_TAIL
     )
     project = parse_string(xml)
-    assert [p.name for p in project.pous] == ["P1"]
+    assert [p.name for p in project.pous] == ["P1", "P1"]
     assert project.pous[0].variables[0].name == "fromStandard"
-    assert len(project.warnings) == 1
-    assert "duplicate POU 'P1'" in project.warnings[0]
+    assert project.pous[1].variables[0].name == "fromCodesys"
+    assert [(p.configuration, p.application) for p in project.pous] == [
+        (None, None), ("Device", "Application"),
+    ]
+    assert project.warnings == []
 
 
 def test_synthetic_generic_section_mapping_warns_only_for_unknown():
