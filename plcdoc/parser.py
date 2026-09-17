@@ -485,52 +485,70 @@ _XML_NS = "http://www.w3.org/XML/1998/namespace"
 
 
 def _canonical_xml(elem: Element, *, graphical: bool = False) -> str:
-    """Canonical XML (C14N 2.0) of one element, independent of source formatting.
+    """Canonical XML with deterministic prefixes and lossless text content.
 
-    Namespace prefixes are rewritten to ``n0``, ``n1``, ... in document order so
-    the text does not depend on the process-wide ElementTree namespace registry
-    (``ET.register_namespace``), attribute order is sorted and formatting
-    whitespace is stripped. Graphical bodies also lose the documented noise
-    elements. The caller's tree is never modified and no Element escapes into
-    the model.
+    Sorted namespace URIs receive ``n0``, ``n1``, ... independently of source
+    prefixes, attribute order and ``ET.register_namespace``. C14N 2.0 sorts
+    attributes. Only indentation in element-only content is removed, respecting
+    inherited ``xml:space``; leaf and mixed-content text stays verbatim.
+    Graphical bodies also lose the documented noise elements. The caller's
+    tree is never modified and no Element escapes into the model.
 
-    The prefixes are assigned here rather than with ``canonicalize(rewrite_prefixes=True)``
-    because CPython's rewriter emits ``xmlns:n1=""`` next to unprefixed
-    attributes, which is not well-formed XML.
+    Assigning prefixes ourselves avoids CPython's prefix rewriter emitting
+    invalid empty-namespace declarations next to unprefixed attributes.
     """
-    prefixes: dict[str, str] = {}
-    fragment = _rebuild(elem, graphical, prefixes)
+    fragment = _rebuild(elem, graphical)
+    namespaces = {
+        _split(name)[0]
+        for node in fragment.iter()
+        for name in (node.tag, *node.attrib)
+    } - {"", _XML_NS}
+    prefixes = {namespace: f"n{i}" for i, namespace in enumerate(sorted(namespaces))}
+    for node in fragment.iter():
+        node.tag = _prefixed(node.tag, prefixes)
+        node.attrib = {_prefixed(key, prefixes): value for key, value in node.attrib.items()}
     for namespace, prefix in prefixes.items():
         fragment.set(f"xmlns:{prefix}", namespace)
-    return ET.canonicalize(ET.tostring(fragment, encoding="unicode"), strip_text=True)
+    # tostring emits literal CR in text. Keep parsed character references such
+    # as &#13; from being normalized to LF when C14N parses the serialization.
+    serialized = ET.tostring(fragment, encoding="unicode").replace("\r", "&#13;")
+    return ET.canonicalize(serialized)
 
 
 def _prefixed(tag: str, prefixes: dict[str, str]) -> str:
-    """``{ns}local`` -> ``n0:local`` with prefixes numbered in order of first use."""
+    """``{ns}local`` -> ``n0:local`` using the fragment's fixed prefix map."""
     namespace, local = _split(tag)
     if not namespace:
         return local
     if namespace == _XML_NS:
         return f"xml:{local}"
-    return f"{prefixes.setdefault(namespace, f'n{len(prefixes)}')}:{local}"
+    return f"{prefixes[namespace]}:{local}"
 
 
-def _rebuild(elem: Element, graphical: bool, prefixes: dict[str, str]) -> Element:
+def _rebuild(elem: Element, graphical: bool, preserve_space: bool = False) -> Element:
     # A filtered rebuild instead of deepcopy: it drops the root's tail (which
     # tostring would emit after the element), XML comments and, for graphical
     # bodies, the noise elements. canonicalize's exclude_tags cannot filter by
     # attribute, which the objectid/network-title noise needs.
-    copy = Element(
-        _prefixed(elem.tag, prefixes),
-        {_prefixed(key, prefixes): value for key, value in elem.attrib.items()},
+    space = elem.get(_q(_XML_NS, "space"))
+    if space in ("preserve", "default"):
+        preserve_space = space == "preserve"
+    element_only = any(isinstance(child.tag, str) for child in elem) and not any(
+        text and text.strip(" \t\r\n") for text in (elem.text, *(child.tail for child in elem))
     )
-    copy.text = elem.text
+    drop_indentation = element_only and not preserve_space
+    copy = Element(elem.tag, dict(elem.attrib))
+    copy.text = None if drop_indentation else elem.text
     for child in elem:
-        if not isinstance(child.tag, str) or (graphical and _graphical_noise(child)):
-            continue
-        child_copy = _rebuild(child, graphical, prefixes)
-        child_copy.tail = child.tail
-        copy.append(child_copy)
+        if isinstance(child.tag, str) and not (graphical and _graphical_noise(child)):
+            copy.append(_rebuild(child, graphical, preserve_space))
+        # Tails belong to this parent's content, even when their element was
+        # excluded. A child's xml:space setting never governs its own tail.
+        if not drop_indentation and child.tail:
+            if len(copy):
+                copy[-1].tail = (copy[-1].tail or "") + child.tail
+            else:
+                copy.text = (copy.text or "") + child.tail
     return copy
 
 

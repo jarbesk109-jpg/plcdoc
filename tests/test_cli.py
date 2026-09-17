@@ -125,14 +125,21 @@ def test_sample04_json_exposes_lossless_model(capsys):
     assert alarm["body_xml"] and contact["xml"]
 
 
-def test_markdown_keeps_comment_text_verbatim():
+def test_terminal_table_keeps_comment_text_verbatim():
     table = markdown_table(("Comment",), [("T > 5 & x < 10",)])
     assert "| T > 5 & x < 10 |" in table
 
 
-def test_markdown_escapes_pipes_and_html_openers_only():
-    table = markdown_table(("Comment",), [("a|b <b>bold</b> <!-- c --> 1 < 2",)])
-    assert "| a\\|b \\<b>bold\\</b> \\<!-- c --> 1 < 2 |" in table
+@pytest.mark.parametrize("value,expected", [
+    ("a|b <b>bold</b> <!-- c --> 1 < 2", "a\\|b <b>bold</b> <!-- c --> 1 < 2"),
+    ("line one\nline two", "line one line two"),
+    ("&#65; &copy;", "&#65; &copy;"),
+    ("<3@example.com>", "<3@example.com>"),
+    (r"\<b>", r"\<b>"),
+])
+def test_terminal_cells_only_escape_pipes_and_flatten_newlines(value, expected):
+    table = markdown_table(("C",), [(value,)])
+    assert table.splitlines()[2] == f"| {expected} |"
 
 
 def test_sample04_table_shows_placeholders_not_xml(capsys):

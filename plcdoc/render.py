@@ -1,24 +1,21 @@
-"""Text rendering helpers (Markdown tables)."""
+"""Plain terminal tables using Markdown-style separators.
+
+Rendered Markdown export needs separate escaping in M3.
+"""
 
 from __future__ import annotations
 
-import re
 from typing import Sequence
-
-# A "<" only opens inline HTML or an autolink when a tag name, "/", "!" or "?"
-# follows it. "x < 10" is literal Markdown and stays verbatim.
-_HTML_OPENER = re.compile(r"<(?=[A-Za-z/!?])")
 
 
 def _cell(value: object) -> str:
     if value is None:
         return ""
-    text = str(value).replace("|", "\\|").replace("\n", " ")
-    return _HTML_OPENER.sub(lambda match: "\\<", text)
+    return str(value).replace("|", "\\|").replace("\n", " ")
 
 
 def markdown_table(headers: Sequence[str], rows: Sequence[Sequence[object]]) -> str:
-    """Render a padded Markdown table. Cells are stringified; None becomes empty."""
+    """Render a padded terminal table. Cells are stringified; None becomes empty."""
     text_rows = [[_cell(v) for v in row] for row in rows]
     widths = [len(h) for h in headers]
     for row in text_rows:

@@ -1,4 +1,4 @@
-"""M2.1/M2.2 regression probes: semantic edits must survive the XML/model boundary.
+"""M2 regression probes: semantic edits must survive the XML/model boundary.
 
 Mutate copies of real exports; synthetic fragments cover shapes absent from the
 samples (nested arrays, WSTRING, struct values and generic graphical extensions).
@@ -39,7 +39,7 @@ def _ld(project, index):
 
 
 def _owners(project):
-    return [*project.pous, *project.gvls, *project.tasks]
+    return [*project.pous, *project.gvls, *project.tasks, *project.all_variables()]
 
 
 LOSSLESS_CASES = [
@@ -56,8 +56,6 @@ LOSSLESS_CASES = [
      lambda p: p.tasks[0].programs[0].instance_name),
     (".//p:task/p:pouInstance", "typeName", "PRG_Alarm",
      lambda p: p.tasks[0].programs[0].type_name),
-    (".//p:configuration", "name", "Device2", lambda p: [o.configuration for o in _owners(p)]),
-    (".//p:resource", "name", "Application2", lambda p: [o.application for o in _owners(p)]),
     (LOCAL, "retain", "true", lambda p: _var(p, "PLC_PRG", "fbConv1").retain),
     (LOCAL, "nonretain", "true", lambda p: _var(p, "PLC_PRG", "fbConv1").nonretain),
     (LOCAL, "persistent", "true", lambda p: _var(p, "PLC_PRG", "fbConv1").persistent),
@@ -71,7 +69,9 @@ LOSSLESS_CASES = [
     (SETPOINTS + "/p:type/p:array/p:dimension", "upper", "8",
      lambda p: _var(p, "PLC_PRG", "aSetpoints").type),
     (SPARE + "/p:type/p:array/p:baseType/p:derived", "name", "OtherMotor",
-     lambda p: (_var(p, "PLC_PRG", "aSpare").type, _var(p, "PLC_PRG", "aSpare").derived_types)),
+     lambda p: _var(p, "PLC_PRG", "aSpare").type),
+    (SPARE + "/p:type/p:array/p:baseType/p:derived", "name", "OtherMotor",
+     lambda p: _var(p, "PLC_PRG", "aSpare").derived_types),
     (EXTRA + "/p:variable[@name='sRecipeName']/p:type/p:string", "length", "80",
      lambda p: _var(p, "GVL_Extra", "sRecipeName").type),
     (SETPOINTS + "/p:initialValue/p:arrayValue/p:value/p:simpleValue", "value", "100",
@@ -105,6 +105,23 @@ def test_lossless(xpath, attribute, value, field):
     before, after = parse_element(original), parse_element(changed)
     assert field(before) != field(after)
     assert before != after
+
+
+@pytest.mark.parametrize("xpath,field,value", [
+    (".//p:configuration", "configuration", "Device2"),
+    (".//p:resource", "application", "Application2"),
+])
+def test_lossless_ownership_on_each_object(xpath, field, value):
+    root = ET.parse(TYPES_QUALIFIERS).getroot()
+    before = _owners(parse_element(root))
+    root.find(xpath, NS).set("name", value)
+    after = _owners(parse_element(root))
+    assert len(before) == len(after)
+    assert before
+    for old, new in zip(before, after):
+        label = f"{type(new).__name__} {getattr(new, 'scope', '')}.{new.name}.{field}"
+        assert getattr(old, field) != getattr(new, field), label
+        assert getattr(new, field) == value, label
 
 
 def test_vendor_attribute_keeps_the_readable_type():
@@ -174,7 +191,6 @@ def test_type_readable_form_and_placeholders(xml, expected, warned):
     project = _variant_project(xml)
     var = _var(project, "PLC_PRG", "aSetpoints")
     assert var.type == expected
-    assert "<" not in var.type
     assert ET.fromstring(var.type_xml).tag == PREFIX + "type"
     assert any("aSetpoints" in w for w in project.warnings) is warned
 
@@ -315,8 +331,86 @@ def test_canonical_data_ignores_prefix_attribute_order_and_indentation():
     assert plain == formatted
 
 
-def test_canonical_xml_does_not_depend_on_registered_namespace_prefixes():
+@pytest.mark.parametrize("before,after", [
+    ('<vendorType>left<part/> </vendorType>', '<vendorType>left<part/></vendorType>'),
+    ('<vendorType xml:space="preserve"> <part/> </vendorType>',
+     '<vendorType xml:space="preserve"><part/></vendorType>'),
+    ('<vendorType> </vendorType>', '<vendorType/>'),
+])
+def test_canonical_fallback_preserves_significant_whitespace(before, after):
+    assert _type_variant(before).type_xml != _type_variant(after).type_xml
+
+
+def _declaration_xml(fragment, field):
+    if field == "return_type_xml":
+        root = ET.parse(TYPES_QUALIFIERS).getroot()
+        container = root.find(".//p:pou[@name='FC_Scale']/p:interface/p:returnType", NS)
+        container.clear()
+        container.extend(ET.fromstring(f'<returnType xmlns="{NS["p"]}">{fragment}</returnType>'))
+        return _pou(parse_element(root), "FC_Scale").return_type_xml
+    var = (_type_variant(fragment) if field == "type_xml"
+           else _type_variant("<INT/>", fragment))
+    return getattr(var, field)
+
+
+@pytest.mark.parametrize("field", ["type_xml", "initial_value_xml", "return_type_xml"])
+@pytest.mark.parametrize("before,after", [
+    ('<vendorValue> a </vendorValue>', '<vendorValue>a</vendorValue>'),
+    ('<vendorValue> </vendorValue>', '<vendorValue/>'),
+    ('<vendorValue>left<part/> </vendorValue>', '<vendorValue>left<part/></vendorValue>'),
+], ids=["padded-value", "whitespace-leaf", "mixed-content-tail"])
+def test_canonical_text_changes_reach_xml_fields(field, before, after):
+    assert _declaration_xml(before, field) != _declaration_xml(after, field)
+
+
+@pytest.mark.parametrize("fragment,expected", [
+    ('<vendorType> \n <part> \t </part> \n </vendorType>',
+     [(None, None), (" \t ", None)]),
+    ('<vendorType> <part/> right </vendorType>',
+     [(" ", None), (None, " right ")]),
+    ('<vendorType> a  b </vendorType>', [(" a  b ", None)]),
+    ('<vendorType>a&#13;b<part/> c&#13;d</vendorType>',
+     [("a\rb", None), (None, " c\rd")]),
+    ('<vendorType>&#13;</vendorType>', [("\r", None)]),
+    ('<vendorType>\u00a0<part/> </vendorType>', [("\u00a0", None), (None, " ")]),
+    ('<vendorType xml:space="preserve"> \n <nested> \t <part/> \n </nested> \t </vendorType>',
+     [(" \n ", None), (" \t ", " \t "), (None, " \n ")]),
+    ('<vendorType xml:space="preserve"> <nested xml:space="default"> <part/> </nested> </vendorType>',
+     [(" ", None), (None, " "), (None, None)]),
+    ('<vendorType> <part xml:space="preserve"> \t </part> </vendorType>',
+     [(None, None), (" \t ", None)]),
+], ids=["indentation-vs-leaf", "tail-makes-mixed-content", "padded-leaf",
+        "character-reference-CR", "whitespace-leaf-CR", "non-XML-space",
+        "inherited-preserve", "default-resets-preserve", "tail-belongs-to-parent"])
+def test_canonical_text_is_preserved_verbatim(fragment, expected):
+    vendor = ET.fromstring(_type_variant(fragment).type_xml)[0]
+    assert [(node.text, node.tail) for node in vendor.iter()] == expected
+
+
+@pytest.mark.parametrize("field", ["type_xml", "initial_value_xml", "return_type_xml"])
+@pytest.mark.parametrize("attributes", ['a:x="1" b:y="2"', 'b:y="2" a:x="1"'])
+def test_canonical_prefixes_ignore_namespaced_attribute_order(field, attributes, monkeypatch):
+    monkeypatch.setattr(ET, "_namespace_map", ET._namespace_map.copy())
+    first = _declaration_xml(
+        '<vendor xmlns:a="urn:a" xmlns:b="urn:b" a:x="1" b:y="2">'
+        '<xhtml xmlns="http://www.w3.org/1999/xhtml"> x &lt; 10 </xhtml></vendor>', field,
+    )
+    ET.register_namespace("other", "urn:a")
+    ET.register_namespace("html", "http://www.w3.org/1999/xhtml")
+    renamed = attributes.replace("a:", "second:").replace("b:", "first:")
+    second = _declaration_xml(
+        f'<vendor xmlns:first="urn:b" xmlns:second="urn:a" {renamed}>'
+        '<h:xhtml xmlns:h="http://www.w3.org/1999/xhtml"> x &lt; 10 </h:xhtml></vendor>', field,
+    )
+    assert first == second
+    vendor = next(node for node in ET.fromstring(second).iter() if "{urn:a}x" in node.attrib)
+    assert vendor.attrib == {"{urn:a}x": "1", "{urn:b}y": "2"}
+    assert vendor[0].text == " x < 10 "
+
+
+def test_canonical_xml_does_not_depend_on_registered_namespace_prefixes(monkeypatch):
     """ET.register_namespace is process-global; the model must not see it."""
+    monkeypatch.setattr(ET, "_namespace_map", ET._namespace_map.copy())
     before = parse_file(TYPES_QUALIFIERS)
     ET.register_namespace("plcdoctest", NS["p"])
     after = parse_file(TYPES_QUALIFIERS)
@@ -353,9 +447,9 @@ def test_parse_element_is_pure_and_ignores_documented_noise():
     assert parse_file(LARGE) == before
 
 
-def test_readable_fields_never_contain_xml(types_qualifiers):
-    for var in types_qualifiers.all_variables():
-        assert "<" not in var.type
-        assert var.initial_value is None or "<" not in var.initial_value
-    for pou in types_qualifiers.pous:
-        assert pou.return_type is None or "<" not in pou.return_type
+@pytest.mark.parametrize("value", ["x < 10", "<b>", "&#65;", r"\<b>"])
+def test_readable_initial_value_keeps_literal_text(value):
+    simple = ET.Element("simpleValue", value=value)
+    var = _type_variant("<string/>", ET.tostring(simple, encoding="unicode"))
+    assert var.initial_value == value
+    assert ET.fromstring(var.initial_value_xml)[0].get("value") == value
