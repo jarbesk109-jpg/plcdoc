@@ -23,6 +23,7 @@ project
 │   │   ├── task            name, interval, priority
 │   │   │   └── pouInstance name = instance; typeName = POU type (empty here)
 │   │   └── addData
+│   │       ├── data[@name=".../plcopenxml/datatype"]   → dataType  ← DUTs (sample 05)
 │   │       ├── data[@name=".../plcopenxml/pou"]        → pou  ← the actual program
 │   │       └── data[@name=".../plcopenxml/libraries"]  → Libraries
 │   └── addData             Device description (ignore)
@@ -36,6 +37,8 @@ not in `types/pous`. The standard location `types/pous` is empty.
 The parser must look in **both** places:
 1. `types/pous/pou`
 2. `.../resource/addData/data[@name="http://www.3s-software.com/plcopenxml/pou"]/pou`
+
+DUTs follow the same rule (see sample 05 findings).
 
 ## POU
 ```xml
@@ -180,13 +183,170 @@ Consequences for the parser:
 - POU-interface `globalVars` belongs to that POU. Only direct
   configuration/resource `globalVars` is a project GVL.
 
+## Findings from `samples/05_drive_oop.xml`
+New project (not a version of 01–04): ENUM `E_DriveState`, STRUCT `ST_Drive`,
+FB `FB_Drive` with method `M_Start`, action `A_Reset`, property `P_Speed`
+(Get/Set), and `PLC_PRG` using all of them. Exported the same way as the other
+samples (Device included).
+
+### Where DUTs live
+Same rule as POUs: `types/dataTypes` is empty. Each DUT is in its own wrapper:
+`.../resource/addData/data[@name="http://www.3s-software.com/plcopenxml/datatype"]/dataType`.
+
+All vendor elements below (`Method`, `Property`, `SetAccessor`, `GetAccessor`,
+`Attributes`, `ProjectStructure`) are in the **PLCopen default namespace**, not
+in the vendor URI. Lookups must use `tc6_0200`.
+
+### ENUM
+```xml
+<dataType name="E_DriveState">
+  <baseType>
+    <enum>
+      <values>
+        <value name="IDLE" value="0" />
+        <value name="RUNNING" value="10" />
+        <value name="FAULT" value="99" />
+      </values>
+    </enum>
+  </baseType>
+  <addData>
+    <data name=".../plcopenxml/attributes">
+      <Attributes>
+        <Attribute Name="qualified_only" Value="" />
+        <Attribute Name="strict" Value="" />
+      </Attributes>
+    </data>
+    <data name=".../plcopenxml/objectid"> ... </data>
+  </addData>
+</dataType>
+```
+- Explicit values are in `value/@value` (string).
+- **The declared base type is lost.** The source says `) INT;`, but `INT` does
+  not appear anywhere in the file. The parser must not invent a default; report
+  the base type as not exported.
+- `{attribute '...'}` pragmas become `Attribute` elements (`Name`, `Value`) in
+  declaration order. A flag pragma has `Value=""`.
+
+### STRUCT
+Standard PLCopen: `baseType/struct/variable`, same `variable` format as POU
+interfaces (arrays and `string length` as in sample 04).
+- A field of another DUT type: `<derived name="E_DriveState" />`.
+- An enum initial value is qualified text: `<simpleValue value="E_DriveState.IDLE" />`.
+- No pragmas were declared, so the STRUCT has only the `objectid` data.
+
+### Function block members
+Child order of `pou[@name="FB_Drive"]`: `interface`, `actions`, `body`, `addData`.
+
+**Action: standard PLCopen**, placed before the FB `body`:
+```xml
+<actions>
+  <action name="A_Reset">
+    <body><ST><xhtml>...</xhtml></ST></body>
+    <addData><data name=".../plcopenxml/objectid"> ... </data></addData>
+  </action>
+</actions>
+```
+No interface: actions have no own variables.
+
+**Method: vendor data** in the FB `addData`:
+```xml
+<data name=".../plcopenxml/method" handleUnknown="implementation">
+  <Method name="M_Start" ObjectId="...">
+    <interface>
+      <returnType><BOOL /></returnType>
+      <inputVars> ... </inputVars>
+      <localVars> ... </localVars>
+    </interface>
+    <body><ST><xhtml>...</xhtml></ST></body>
+    <addData />
+  </Method>
+</data>
+```
+
+**Property: vendor data** in the FB `addData`:
+```xml
+<data name=".../plcopenxml/property" handleUnknown="implementation">
+  <Property name="P_Speed" ObjectId="...">
+    <interface>
+      <returnType><REAL /></returnType>
+      <addData>
+        <data name=".../plcopenxml/accessmodifiers"><AccessModifiers /></data>
+      </addData>
+    </interface>
+    <SetAccessor>
+      <interface />
+      <body><ST><xhtml>rSpeed := P_Speed;</xhtml></ST></body>
+      <addData />
+    </SetAccessor>
+    <GetAccessor>
+      <interface />
+      <body><ST><xhtml> P_Speed := rSpeed;</xhtml></ST></body>
+      <addData />
+    </GetAccessor>
+    <addData />
+  </Property>
+</data>
+```
+- `SetAccessor` comes **before** `GetAccessor`. Do not assume order.
+- Each accessor has its own (here empty) `interface`.
+- `AccessModifiers` is empty when no modifier (PUBLIC, PRIVATE, ...) is set.
+- FB `addData` order in this file: `method`, `property`, `objectid`.
+
+### Code body whitespace
+The Get body is `" P_Speed := rSpeed;"` with a leading space typed in the
+editor. Unlike variable comments, code text is **not** stripped: this is real
+content and must be preserved (Decision 010).
+
+### ObjectId locations
+| Object | Where the ObjectId is |
+|---|---|
+| dataType, pou, action, task, Libraries, resource, configuration | `addData/data[@name=".../objectid"]/ObjectId` |
+| Method, Property | `@ObjectId` attribute |
+| Get/Set accessors | none |
+
+### ProjectStructure
+Under the project-level `addData`:
+```xml
+<ProjectStructure>
+  <Object Name="Device" ObjectId="...">
+    <Object Name="Application" ObjectId="...">
+      <Object Name="Library Manager" ObjectId="..." />
+      <Object Name="PLC_PRG" ObjectId="..." />
+      <Object Name="MainTask" ObjectId="..." />
+      <Object Name="E_DriveState" ObjectId="..." />
+      <Object Name="ST_Drive" ObjectId="..." />
+      <Object Name="FB_Drive" ObjectId="...">
+        <Object Name="M_Start" ObjectId="..." />
+        <Object Name="A_Reset" ObjectId="..." />
+        <Object Name="P_Speed" ObjectId="..." />
+      </Object>
+    </Object>
+  </Object>
+</ProjectStructure>
+```
+- Only `Name` and `ObjectId`: **no object kind**. The kind comes from joining
+  the ObjectId with the table above.
+- Order differs from the CODESYS tree view.
+- `Task Configuration` is not a node; `MainTask` sits directly under `Application`.
+- Get/Set accessors are not nodes.
+
+### Notes for cross-reference (M3a)
+- Same name, different scope: `xOk` is a local of both `PLC_PRG` and `FB_Drive.M_Start`.
+- Method bodies use FB members (`stData`) without a prefix: resolve method
+  variables first, then FB variables.
+- `M_Start := xOk;` assigns the method return value, not a variable.
+- In the Set accessor, `P_Speed` is the incoming value.
+- `fbDrive.P_Speed := 1200.0;` is a property write (calls Set);
+  `rActual := fbDrive.P_Speed;` is a property read (calls Get).
+- `E_DriveState.RUNNING` is an enum literal, not a variable.
+
 ## Useful extras
 - `task`: task name, cycle (`interval="PT0.02S"`), priority, and which program it calls → program tree.
-- `ProjectStructure`: object hierarchy with names → program tree.
+- `ProjectStructure`: object hierarchy with names → program tree (details and caveats in sample 05 findings).
 - `fileHeader/@productVersion`: shown in generated docs.
 
 ## Noise to ignore (especially in diff)
-- `ObjectId` GUIDs
+- `ObjectId` GUIDs (ignore when comparing, but needed to join `ProjectStructure` nodes to objects)
 - `creationDateTime`, `modificationDateTime`
 - `Libraries`, `Device` description, `coordinateInfo`
 - Line-ending differences inside code bodies (normalize before comparing)
