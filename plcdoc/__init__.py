@@ -20,6 +20,15 @@ from plcdoc.model import (
     parse_address,
 )
 from plcdoc.parser import ParseError, parse_bytes, parse_file, parse_string
+from plcdoc.xref import (
+    CrossReference,
+    Location,
+    Reference,
+    Target,
+    Unresolved,
+    by_target,
+    cross_reference,
+)
 
 __version__ = "0.0.1"
 
@@ -28,20 +37,27 @@ __all__ = [
     "Action",
     "Address",
     "Attribute",
+    "CrossReference",
     "DataType",
     "EnumValue",
     "GlobalVarList",
     "GraphicalElement",
+    "Location",
     "Method",
     "ParseError",
     "Pou",
     "PouInstance",
     "Project",
     "Property",
+    "Reference",
     "StructureNode",
+    "Target",
     "Task",
+    "Unresolved",
     "Variable",
     "__version__",
+    "by_target",
+    "cross_reference",
     "parse_address",
     "parse_bytes",
     "parse_file",

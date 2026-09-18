@@ -1,0 +1,462 @@
+"""Cross-reference (Decision 011): sample 05 and 03 oracles, plus SYNTHETIC scope cases.
+
+Rows are ``(unit, line, column, text, access, target, member, member_target)``
+with targets written ``kind:scope.name``. Every target in the samples is owned
+by ("Device", "Application"); the owner is asserted separately.
+"""
+
+from copy import deepcopy
+from xml.etree import ElementTree as ET
+
+import pytest
+
+from plcdoc import Target, by_target, cross_reference, parse_file
+from plcdoc.parser import parse_element
+
+from conftest import DRIVE_OOP, LARGE, TYPES_QUALIFIERS
+
+NS = {"p": "http://www.plcopen.org/xml/tc6_0200"}
+PREFIX = "{" + NS["p"] + "}"
+XHTML = "{http://www.w3.org/1999/xhtml}xhtml"
+KIND = {"variable": "v", "field": "f", "method": "m", "property": "p", "action": "a", "result": "r", "pou": "pou"}
+P, F, A, M, G, S = (
+    "PLC_PRG", "FB_Drive", "FB_Drive.A_Reset", "FB_Drive.M_Start", "FB_Drive.P_Speed.Get", "FB_Drive.P_Speed.Set",
+)
+
+
+def _t(target):
+    return None if target is None else f"{KIND[target.kind]}:{target.scope}.{target.name}"
+
+
+def _row(r):
+    return (r.location.unit, r.location.line, r.location.column, r.text, r.access,
+            _t(r.target), r.member, _t(r.member_target))
+
+
+def _short(r):
+    return (r.text, r.access, _t(r.target), r.member, _t(r.member_target))
+
+
+def _unresolved(x):
+    return [(u.text, u.access, u.reason) for u in x.unresolved]
+
+
+def _set_body(root, unit, text):
+    """Replace the ST text of a POU ("PLC_PRG"), action ("FB.A") or method ("FB.M") body."""
+    pou, _, member = unit.partition(".")
+    elem = root.find(f".//p:pou[@name='{pou}']", NS)
+    if member:
+        action = elem.find(f".//p:action[@name='{member}']", NS)
+        elem = action if action is not None else elem.find(f".//p:Method[@name='{member}']", NS)
+    elem.find("p:body/p:ST/" + XHTML, NS).text = text
+
+
+def _with_locals(root, pou, declarations, section="localVars"):
+    """SYNTHETIC declarations: {name: '<BOOL/>' | '<derived name="X"/>' | ...} added to *pou*."""
+    interface = root.find(f".//p:pou[@name='{pou}']/p:interface", NS)
+    holder = interface.find("p:" + section, NS)
+    if holder is None:
+        holder = ET.SubElement(interface, PREFIX + section)
+    for name, type_fragment in declarations.items():
+        var = ET.SubElement(holder, PREFIX + "variable", name=name)
+        ET.SubElement(var, PREFIX + "type").append(ET.fromstring(f'<type xmlns="{NS["p"]}">{type_fragment}</type>')[0])
+
+
+# --------------------------------------------------------------------------- #
+# Sample oracles
+# --------------------------------------------------------------------------- #
+
+SAMPLE05_ROWS = [
+    (P, 1, 1, "fbDrive", "call", f"v:{P}.fbDrive", "", None),
+    (P, 1, 9, "xEnable", "write", f"v:{P}.fbDrive", "xEnable", f"v:{F}.xEnable"),
+    (P, 2, 4, "xStart", "read", f"v:{P}.xStart", "", None),
+    (P, 3, 5, "xOk", "write", f"v:{P}.xOk", "", None),
+    (P, 3, 12, "fbDrive.M_Start", "call", f"v:{P}.fbDrive", "M_Start", f"m:{F}.M_Start"),
+    (P, 3, 28, "rTarget", "write", f"v:{P}.fbDrive", "M_Start.rTarget", f"v:{M}.rTarget"),
+    (P, 4, 5, "xStart", "write", f"v:{P}.xStart", "", None),
+    (P, 6, 1, "fbDrive.P_Speed", "write", f"v:{P}.fbDrive", "P_Speed", f"p:{F}.P_Speed"),
+    (P, 7, 1, "rActual", "write", f"v:{P}.rActual", "", None),
+    (P, 7, 12, "fbDrive.P_Speed", "read", f"v:{P}.fbDrive", "P_Speed", f"p:{F}.P_Speed"),
+    (P, 8, 8, "fbDrive.xRunning", "read", f"v:{P}.fbDrive", "xRunning", f"v:{F}.xRunning"),
+    (P, 9, 5, "fbDrive.A_Reset", "call", f"v:{P}.fbDrive", "A_Reset", f"a:{F}.A_Reset"),
+    (F, 1, 1, "xRunning", "write", f"v:{F}.xRunning", "", None),
+    (F, 1, 13, "xEnable", "read", f"v:{F}.xEnable", "", None),
+    (F, 1, 26, "stData.eState", "read", f"v:{F}.stData", "eState", "f:ST_Drive.eState"),
+    (A, 1, 1, "stData.eState", "write", f"v:{F}.stData", "eState", "f:ST_Drive.eState"),
+    (A, 2, 1, "stData.rSpeedSet", "write", f"v:{F}.stData", "rSpeedSet", "f:ST_Drive.rSpeedSet"),
+    (M, 1, 1, "xOk", "write", f"v:{M}.xOk", "", None),
+    (M, 1, 8, "rTarget", "read", f"v:{M}.rTarget", "", None),
+    (M, 2, 4, "xOk", "read", f"v:{M}.xOk", "", None),
+    (M, 3, 5, "stData.rSpeedSet", "write", f"v:{F}.stData", "rSpeedSet", "f:ST_Drive.rSpeedSet"),
+    (M, 3, 25, "rTarget", "read", f"v:{M}.rTarget", "", None),
+    (M, 4, 5, "stData.eState", "write", f"v:{F}.stData", "eState", "f:ST_Drive.eState"),
+    (M, 6, 1, "M_Start", "write", f"r:{M}.M_Start", "", None),
+    (M, 6, 12, "xOk", "read", f"v:{M}.xOk", "", None),
+    (G, 1, 2, "P_Speed", "write", f"r:{G}.P_Speed", "", None),
+    (G, 1, 13, "rSpeed", "read", f"v:{F}.rSpeed", "", None),
+    (S, 1, 1, "rSpeed", "write", f"v:{F}.rSpeed", "", None),
+    (S, 1, 11, "P_Speed", "read", f"r:{S}.P_Speed", "", None),
+]
+
+
+def test_sample05_references(drive_oop):
+    x = cross_reference(drive_oop)
+    assert [_row(r) for r in x.references] == SAMPLE05_ROWS
+    assert len(x.references) == 29
+    assert x.unresolved == [] and x.warnings == []
+    assert not any("E_DriveState" in r.text for r in x.references)
+    for r in x.references:
+        assert (r.location.configuration, r.location.application) == ("Device", "Application")
+        assert (r.target.configuration, r.target.application) == ("Device", "Application")
+        assert r.location.local_id is None and r.via is None
+    results = [r.target for r in x.references if r.target.kind == "result"]
+    assert results[1:] == [
+        Target("result", "Device", "Application", G, "P_Speed"),
+        Target("result", "Device", "Application", S, "P_Speed"),
+    ]
+
+
+def test_sample03_references_use_globals_pous_and_library_types(large):
+    x = cross_reference(large)
+    rows = {(r.location.unit, r.location.line, r.location.column): _short(r) for r in x.references}
+    assert rows[("PLC_PRG", 1, 15)] == ("bEStopOK", "read", "v:GVL_IO.bEStopOK", "", None)
+    assert rows[("PLC_PRG", 13, 1)] == ("PRG_Alarm", "call", "pou:PRG_Alarm.PRG_Alarm", "", None)
+    assert rows[("PLC_PRG", 7, 15)] == ("FC_Scale", "call", "pou:FC_Scale.FC_Scale", "", None)
+    assert rows[("PLC_PRG", 7, 24)] == ("iRaw", "write", "pou:FC_Scale.FC_Scale", "iRaw", "v:FC_Scale.iRaw")
+    assert rows[("PLC_PRG", 7, 32)] == ("iTankLevelRaw", "read", "v:GVL_IO.iTankLevelRaw", "", None)
+    assert rows[("PLC_PRG", 3, 90)] == ("bRun", "read", "v:PLC_PRG.fbConv1", "bRun", "v:FB_Motor.bRun")
+    assert rows[("PLC_PRG", 3, 98)] == ("bMotor1", "write", "v:GVL_IO.bMotor1", "", None)
+    assert rows[("FB_Motor", 1, 10)] == ("IN", "write", "v:FB_Motor.tonFault", "IN", None)
+    assert rows[("FB_Motor", 2, 11)] == ("tonFault.Q", "read", "v:FB_Motor.tonFault", "Q", None)
+    assert rows[("FC_Scale", 1, 1)] == ("FC_Scale", "write", "r:FC_Scale.FC_Scale", "", None)
+    assert rows[("FC_Scale", 1, 33)] == ("iRaw", "read", "v:FC_Scale.iRaw", "", None)
+    assert _unresolved(x) == [("REAL_TO_INT", "call", "undeclared"), ("INT_TO_REAL", "call", "undeclared")]
+    assert x.warnings == []
+    assert not any("T#" in r.text or "500" in r.text for r in x.references)
+
+
+def test_by_target_indexes_head_and_member(drive_oop):
+    x = cross_reference(drive_oop)
+    grouped = by_target(x)
+    owner = ("Device", "Application")
+    x_running = grouped[Target("variable", *owner, F, "xRunning")]
+    assert [_row(r)[:3] for r in x_running] == [(P, 8, 8), (F, 1, 1)]
+    fb_drive = grouped[Target("variable", *owner, P, "fbDrive")]
+    assert (P, 8, 8) in [_row(r)[:3] for r in fb_drive]
+    for references in grouped.values():
+        assert len(references) == len(set(map(id, references)))
+    with_member = sum(1 for r in x.references if r.member_target is not None)
+    assert with_member == 12
+    assert sum(len(v) for v in grouped.values()) == 29 + with_member
+
+
+def test_reference_order_is_deterministic(drive_oop):
+    assert cross_reference(drive_oop) == cross_reference(parse_file(DRIVE_OOP))
+
+
+# --------------------------------------------------------------------------- #
+# ST edge cases (SYNTHETIC bodies in a copy of sample 03 or 05)
+# --------------------------------------------------------------------------- #
+
+INT, BOOL = "<INT/>", "<BOOL/>"
+EDGE_CASES = [
+    ("comment-line", LARGE, P, {}, "// bLineReady := FALSE;\nbLineReady := TRUE;",
+     [("bLineReady", "write", "v:PLC_PRG.bLineReady", "", None)], []),
+    ("comment-block", LARGE, P, {}, "(* bLineReady := FALSE; *) bLineReady := TRUE;",
+     [("bLineReady", "write", "v:PLC_PRG.bLineReady", "", None)], []),
+    ("comment-c", LARGE, P, {}, "/* bLineReady := FALSE; */ bLineReady := TRUE;",
+     [("bLineReady", "write", "v:PLC_PRG.bLineReady", "", None)], []),
+    ("string", LARGE, P, {"sMsg": '<string length="20"/>'}, "sMsg := 'a // (* $' b';",
+     [("sMsg", "write", "v:PLC_PRG.sMsg", "", None)], []),
+    ("pragma", LARGE, P, {}, "{warning 'bLineReady := 1'} bLineReady := TRUE;",
+     [("bLineReady", "write", "v:PLC_PRG.bLineReady", "", None)], []),
+    ("literals", LARGE, P, {"iVal": INT, "tDelay": "<TIME/>"}, "iVal := 16#FF + INT#5; tDelay := T#5s;",
+     [("iVal", "write", "v:PLC_PRG.iVal", "", None), ("tDelay", "write", "v:PLC_PRG.tDelay", "", None)], []),
+    ("bit-access", LARGE, P, {"xBit": BOOL, "wStatus": "<WORD/>"}, "xBit := wStatus.3;",
+     [("xBit", "write", "v:PLC_PRG.xBit", "", None), ("wStatus", "read", "v:PLC_PRG.wStatus", "", None)], []),
+    ("case-insensitive", LARGE, P, {"xStart": BOOL}, "XSTART := TRUE;",
+     [("XSTART", "write", "v:PLC_PRG.xStart", "", None)], []),
+    ("set-reset", LARGE, P, {"xA": BOOL, "xB": BOOL}, "xA S= xB; xA R= xB;",
+     [("xA", "write", "v:PLC_PRG.xA", "", None), ("xB", "read", "v:PLC_PRG.xB", "", None),
+      ("xA", "write", "v:PLC_PRG.xA", "", None), ("xB", "read", "v:PLC_PRG.xB", "", None)], []),
+    ("ref-assign", LARGE, P, {"refX": "<pointer><baseType><INT/></baseType></pointer>", "iVal": INT},
+     "refX REF= iVal;",
+     [("refX", "write", "v:PLC_PRG.refX", "", None), ("iVal", "read", "v:PLC_PRG.iVal", "", None)], []),
+    ("for-loop", LARGE, P, {"i": INT, "n": INT, "iVal": INT}, "FOR i := 1 TO n DO iVal := i; END_FOR",
+     [("i", "write", "v:PLC_PRG.i", "", None), ("n", "read", "v:PLC_PRG.n", "", None),
+      ("iVal", "write", "v:PLC_PRG.iVal", "", None), ("i", "read", "v:PLC_PRG.i", "", None)], []),
+    ("array-index", LARGE, P, {"a": '<array><dimension lower="1" upper="3"/><baseType><INT/></baseType></array>',
+                               "i": INT, "iVal": INT}, "iVal := a[i];",
+     [("iVal", "write", "v:PLC_PRG.iVal", "", None), ("a", "read", "v:PLC_PRG.a", "", None),
+      ("i", "read", "v:PLC_PRG.i", "", None)], []),
+    ("adr", LARGE, P, {"pAddr": "<pointer><baseType><INT/></baseType></pointer>", "iVal": INT},
+     "pAddr := ADR(iVal);",
+     [("pAddr", "write", "v:PLC_PRG.pAddr", "", None), ("iVal", "read", "v:PLC_PRG.iVal", "", None)],
+     [("ADR", "call", "undeclared")]),
+    ("this", LARGE, "FB_Motor", {}, "THIS^.bRun := TRUE;",
+     [("THIS^.bRun", "write", "v:FB_Motor.bRun", "", None)], []),
+    ("super", LARGE, "FB_Motor", {}, "SUPER^.M();", [], [("SUPER^.M", "call", "inheritance")]),
+    ("qualified-global", LARGE, P, {}, "GVL_IO.bStart1 := TRUE;",
+     [("GVL_IO.bStart1", "write", "v:GVL_IO.bStart1", "", None)], []),
+    ("other-program-variable", LARGE, "FB_Motor", {}, "bRun := PLC_PRG.bLineReady;",
+     [("bRun", "write", "v:FB_Motor.bRun", "", None), ("PLC_PRG.bLineReady", "read", "v:PLC_PRG.bLineReady", "", None)], []),
+    ("unqualified-enum-literal", DRIVE_OOP, A, {}, "stData.eState := IDLE;",
+     [("stData.eState", "write", "v:FB_Drive.stData", "eState", "f:ST_Drive.eState")], []),
+    ("library-namespace", LARGE, P, {"iVal": INT}, "iVal := Standard.SomeConst;",
+     [("iVal", "write", "v:PLC_PRG.iVal", "", None)], [("Standard.SomeConst", "read", "undeclared")]),
+    ("pointer-deref", DRIVE_OOP, P, {"pData": '<pointer><baseType><derived name="ST_Drive"/></baseType></pointer>'},
+     "rActual := pData^.rSpeedSet;",
+     [("rActual", "write", "v:PLC_PRG.rActual", "", None), ("pData^.rSpeedSet", "read", "v:PLC_PRG.pData", "rSpeedSet", None)], []),
+]
+
+
+@pytest.mark.parametrize(
+    "sample,unit,declarations,body,expected,unresolved", [case[1:] for case in EDGE_CASES],
+    ids=[case[0] for case in EDGE_CASES],
+)
+def test_st_edge_cases(sample, unit, declarations, body, expected, unresolved):
+    root = ET.parse(sample).getroot()
+    _with_locals(root, unit.partition(".")[0], declarations)
+    _set_body(root, unit, body)
+    x = cross_reference(parse_element(root))
+    rows = [_short(r) for r in x.references if r.location.unit == unit]
+    assert rows == expected
+    assert [(u.text, u.access, u.reason) for u in x.unresolved if u.location.unit == unit] == unresolved
+
+
+ONE_LINE = (
+    "IF a THEN b := 1; ELSIF c THEN d := 2; ELSE e := 3; END_IF "
+    "WHILE f DO g := 4; END_WHILE REPEAT h := 5; UNTIL k END_REPEAT "
+    "CASE m OF 1: n := 6; 2, 3: o := 7; ELSE p := 8; END_CASE q := 9;"
+)
+MULTI_LINE = (
+    "IF a THEN\n    b := 1;\nELSIF c THEN\n    d := 2;\nELSE\n    e := 3;\nEND_IF\n"
+    "WHILE f DO\n    g := 4;\nEND_WHILE\nREPEAT\n    h := 5;\nUNTIL k\nEND_REPEAT\n"
+    "CASE m OF\n    1:\n        n := 6;\n    2, 3:\n        o := 7;\nELSE\n    p := 8;\nEND_CASE\nq := 9;"
+)
+
+
+@pytest.mark.parametrize("body", [ONE_LINE, MULTI_LINE], ids=["one-line", "multi-line"])
+def test_statement_boundaries(body):
+    root = ET.parse(LARGE).getroot()
+    _with_locals(root, P, {name: INT for name in "abcdefghkmnopq"})
+    _set_body(root, P, body)
+    x = cross_reference(parse_element(root))
+    rows = [(r.text, r.access) for r in x.references if r.location.unit == P]
+    assert sorted(t for t, a in rows if a == "write") == sorted("bdeghnopq")
+    assert sorted(t for t, a in rows if a == "read") == sorted("acfkm")
+    assert len(rows) == 14
+    assert [u for u in x.unresolved if u.location.unit == P] == []
+
+
+def test_nested_call_and_index_state():
+    root = ET.parse(DRIVE_OOP).getroot()
+    array = '<array><dimension lower="1" upper="3"/><baseType><REAL/></baseType></array>'
+    _with_locals(root, P, {"a": array, "b": array, "i": INT, "c": "<REAL/>"})
+    _set_body(root, P, "a[fbDrive.M_Start(rTarget := b[i])] := c;")
+    x = cross_reference(parse_element(root))
+    assert [_short(r) for r in x.references if r.location.unit == P] == [
+        ("a", "write", "v:PLC_PRG.a", "", None),
+        ("fbDrive.M_Start", "call", "v:PLC_PRG.fbDrive", "M_Start", "m:FB_Drive.M_Start"),
+        ("rTarget", "write", "v:PLC_PRG.fbDrive", "M_Start.rTarget", "v:FB_Drive.M_Start.rTarget"),
+        ("b", "read", "v:PLC_PRG.b", "", None),
+        ("i", "read", "v:PLC_PRG.i", "", None),
+        ("c", "read", "v:PLC_PRG.c", "", None),
+    ]
+    assert x.unresolved == []
+
+
+# --------------------------------------------------------------------------- #
+# VAR_EXTERNAL, VAR_IN_OUT, owner chain, shadowing, member walk (SYNTHETIC)
+# --------------------------------------------------------------------------- #
+
+
+def test_var_external_is_an_alias():
+    root = ET.parse(LARGE).getroot()
+    _with_locals(root, P, {"bHorn": BOOL, "bMissing": BOOL}, section="externalVars")
+    _set_body(root, P, "bHorn := TRUE;\nGVL_IO.bHorn := FALSE;\nbMissing := TRUE;")
+    _set_body(root, "FB_Motor", "PLC_PRG.bHorn := TRUE;")
+    project = parse_element(root)
+    x = cross_reference(project)
+    owner = ("Device", "Application")
+    global_horn = Target("variable", *owner, "GVL_IO", "bHorn")
+    external_horn = Target("variable", *owner, P, "bHorn")
+    rows = [(r.location.unit, r.text, r.access, r.target, r.via) for r in x.references
+            if r.target.name == "bHorn"]
+    assert rows == [
+        (P, "bHorn", "write", global_horn, external_horn),
+        (P, "GVL_IO.bHorn", "write", global_horn, None),
+        ("FB_Motor", "PLC_PRG.bHorn", "write", global_horn, external_horn),
+    ]
+    declared = {(v.name, v.section) for v in project.pous[0].variables}
+    assert ("bHorn", "external") in declared
+    assert external_horn not in by_target(x)
+    assert _unresolved(x)[:1] == [("bMissing", "write", "external without global")]
+    assert x.warnings == []
+
+
+def test_var_external_ambiguity_warns():
+    root = ET.parse(TYPES_QUALIFIERS).getroot()
+    for gvl in root.findall(".//p:resource/p:globalVars", NS):
+        _declare_global(gvl, "bDup")
+    _with_locals(root, P, {"bDup": BOOL}, section="externalVars")
+    _set_body(root, P, "bDup := TRUE;")
+    x = cross_reference(parse_element(root))
+    assert [_short(r) for r in x.references if r.location.unit == P] == [
+        ("bDup", "write", "v:GVL_IO.bDup", "", None),
+    ]
+    assert x.warnings == ["ambiguous global 'bDup': GVL_IO, GVL_Extra (using GVL_IO)"]
+
+
+def _declare_global(gvl, name, type_fragment=BOOL):
+    var = ET.Element(PREFIX + "variable", name=name)
+    ET.SubElement(var, PREFIX + "type").append(ET.fromstring(f'<type xmlns="{NS["p"]}">{type_fragment}</type>')[0])
+    gvl.insert(len(gvl.findall("p:variable", NS)), var)
+
+
+def _in_out_project():
+    """FB_Motor gains io (VAR_IN_OUT) right after the inputs and ioc (VAR_IN_OUT CONSTANT) after that."""
+    root = ET.parse(LARGE).getroot()
+    interface = root.find(".//p:pou[@name='FB_Motor']/p:interface", NS)
+    inputs = interface.find("p:inputVars", NS)
+    position = list(interface).index(inputs) + 1
+    for offset, (name, constant) in enumerate([("io", None), ("ioc", "true")]):
+        section = ET.Element(PREFIX + "inOutVars", **({"constant": constant} if constant else {}))
+        var = ET.SubElement(section, PREFIX + "variable", name=name)
+        ET.SubElement(ET.SubElement(var, PREFIX + "type"), PREFIX + "INT")
+        interface.insert(position + offset, section)
+    _with_locals(root, P, {"v1": INT, "v2": INT})
+    return root
+
+
+@pytest.mark.parametrize("body,expected,unresolved", [
+    ("fbConv1(io := v1, ioc := v2);", [
+        ("fbConv1", "call", "v:PLC_PRG.fbConv1", "", None),
+        ("io", "readwrite", "v:PLC_PRG.fbConv1", "io", "v:FB_Motor.io"),
+        ("v1", "readwrite", "v:PLC_PRG.v1", "", None),
+        ("ioc", "read", "v:PLC_PRG.fbConv1", "ioc", "v:FB_Motor.ioc"),
+        ("v2", "read", "v:PLC_PRG.v2", "", None),
+    ], []),
+    ("fbConv1(bStart1, bStop1, bFault1, bLineReady, v1, v2);", [
+        ("fbConv1", "call", "v:PLC_PRG.fbConv1", "", None),
+        ("bStart1", "read", "v:GVL_IO.bStart1", "", None),
+        ("bStop1", "read", "v:GVL_IO.bStop1", "", None),
+        ("bFault1", "read", "v:GVL_IO.bFault1", "", None),
+        ("bLineReady", "read", "v:PLC_PRG.bLineReady", "", None),
+        ("v1", "readwrite", "v:PLC_PRG.v1", "", None),
+        ("v2", "read", "v:PLC_PRG.v2", "", None),
+    ], []),
+    ("INT_TO_REAL(v1);", [("v1", "read", "v:PLC_PRG.v1", "", None)], [("INT_TO_REAL", "call", "undeclared")]),
+], ids=["named", "positional", "unknown-callee"])
+def test_var_in_out_actuals(body, expected, unresolved):
+    root = _in_out_project()
+    _set_body(root, P, body)
+    project = parse_element(root)
+    formals = [(v.name, v.section, v.constant) for v in project.pous[1].variables if v.section != "local"]
+    assert formals == [
+        ("bStart", "input", False), ("bStop", "input", False), ("bFault", "input", False),
+        ("bInterlock", "input", False), ("io", "inout", False), ("ioc", "inout", True),
+        ("bRun", "output", False), ("bAlarm", "output", False),
+    ]
+    x = cross_reference(project)
+    assert [_short(r) for r in x.references if r.location.unit == P] == expected
+    assert [(u.text, u.access, u.reason) for u in x.unresolved if u.location.unit == P] == unresolved
+
+
+def _owner_chain_case(case):
+    root = ET.parse(TYPES_QUALIFIERS if case == "two-gvls" else LARGE).getroot()
+    if case == "second-application":
+        configuration = root.find(".//p:configuration", NS)
+        second = deepcopy(configuration.find("p:resource", NS))
+        second.set("name", "Application2")
+        configuration.append(second)
+    elif case == "project-pou":
+        data = root.find(".//p:resource/p:addData", NS)
+        wrapper = next(d for d in data if d.find("p:pou[@name='FC_Scale']", NS) is not None)
+        data.remove(wrapper)
+        root.find("./p:types/p:pous", NS).append(wrapper.find("p:pou", NS))
+    elif case == "configuration-gvl":
+        configuration = root.find(".//p:configuration", NS)
+        resource = configuration.find("p:resource", NS)
+        gvl = resource.find("p:globalVars", NS)
+        resource.remove(gvl)
+        configuration.insert(1, gvl)
+    elif case == "conflicting-pou":
+        data = root.find(".//p:resource/p:addData", NS)
+        wrapper = next(d for d in data if d.find("p:pou[@name='FC_Scale']", NS) is not None)
+        duplicate = deepcopy(wrapper)
+        duplicate.find(".//p:ST/" + XHTML, NS).text = "FC_Scale := 0.0;"
+        data.append(duplicate)
+    elif case == "two-gvls":
+        for gvl in root.findall(".//p:resource/p:globalVars", NS):
+            _declare_global(gvl, "bDup")
+        _set_body(root, P, "bDup := TRUE;")
+    return root
+
+
+@pytest.mark.parametrize("case", [
+    "second-application", "project-pou", "configuration-gvl", "conflicting-pou", "two-gvls",
+])
+def test_owner_chain_resolution(case):
+    x = cross_reference(parse_element(_owner_chain_case(case)))
+    calls = [r for r in x.references if r.text == "FC_Scale" and r.access == "call"]
+    if case == "second-application":
+        by_app = {r.location.application: r.target for r in calls}
+        assert by_app["Application"] == Target("pou", "Device", "Application", "FC_Scale", "FC_Scale")
+        assert by_app["Application2"] == Target("pou", "Device", "Application2", "FC_Scale", "FC_Scale")
+        assert x.warnings == []
+    elif case == "project-pou":
+        assert {r.target for r in calls} == {Target("pou", None, None, "FC_Scale", "FC_Scale")}
+        assert x.warnings == []
+    elif case == "configuration-gvl":
+        estop = next(r for r in x.references if r.text == "bEStopOK")
+        assert estop.target == Target("variable", "Device", None, "GVL_IO", "bEStopOK")
+        assert x.warnings == []
+    elif case == "conflicting-pou":
+        assert {r.target for r in calls} == {Target("pou", "Device", "Application", "FC_Scale", "FC_Scale")}
+        assert x.warnings == ["ambiguous POU 'FC_Scale' in Device/Application: using the first definition"]
+    else:
+        dup = next(r for r in x.references if r.text == "bDup")
+        assert dup.target == Target("variable", "Device", "Application", "GVL_IO", "bDup")
+        assert x.warnings == ["ambiguous global 'bDup': GVL_IO, GVL_Extra (using GVL_IO)"]
+
+
+def test_method_local_shadows_fb_variable():
+    root = ET.parse(DRIVE_OOP).getroot()
+    method = root.find(".//p:Method[@name='M_Start']", NS)
+    var = ET.SubElement(method.find("p:interface/p:localVars", NS), PREFIX + "variable", name="rSpeed")
+    ET.SubElement(ET.SubElement(var, PREFIX + "type"), PREFIX + "REAL")
+    _set_body(root, "FB_Drive.M_Start", "rSpeed := 1.0;")
+    x = cross_reference(parse_element(root))
+    assert [_short(r) for r in x.references if r.location.unit == M] == [
+        ("rSpeed", "write", f"v:{M}.rSpeed", "", None),
+    ]
+    assert x.warnings == []
+
+
+@pytest.mark.parametrize("declarations,body,expected", [
+    ({"p": '<pointer><baseType><derived name="ST_Drive"/></baseType></pointer>'},
+     "rActual := p^.eState;",
+     [("rActual", "write", "v:PLC_PRG.rActual", "", None), ("p^.eState", "read", "v:PLC_PRG.p", "eState", None)]),
+    ({"s": '<struct><variable name="d"><type><derived name="FB_Drive"/></type></variable></struct>'},
+     "xOk := s.d.xRunning; xOk := s.d;",
+     [("xOk", "write", "v:PLC_PRG.xOk", "", None),
+      ("s.d.xRunning", "read", "v:PLC_PRG.s", "d.xRunning", "v:FB_Drive.xRunning"),
+      ("xOk", "write", "v:PLC_PRG.xOk", "", None),
+      ("s.d", "read", "v:PLC_PRG.s", "d", None)]),
+    ({"arr": '<array><dimension lower="1" upper="2"/><baseType><derived name="FB_Drive"/></baseType></array>'},
+     "xOk := arr[1].xRunning;",
+     [("xOk", "write", "v:PLC_PRG.xOk", "", None),
+      ("arr.xRunning", "read", "v:PLC_PRG.arr", "xRunning", "v:FB_Drive.xRunning")]),  # text drops [1]
+], ids=["pointer-to-dut", "inline-struct", "array-of-fb"])
+def test_member_walk_uses_type_structure(declarations, body, expected):
+    root = ET.parse(DRIVE_OOP).getroot()
+    _with_locals(root, P, declarations)
+    _set_body(root, P, body)
+    project = parse_element(root)
+    declared = {v.name: v for v in project.pous[0].variables}
+    for name in declarations:
+        assert len(declared[name].derived_types) == 1  # derived_types alone cannot tell these apart
+    x = cross_reference(project)
+    assert [_short(r) for r in x.references if r.location.unit == P] == expected
+    assert x.unresolved == []
