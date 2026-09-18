@@ -34,12 +34,15 @@ from defusedxml import ElementTree as DefusedET
 from defusedxml.ElementTree import ParseError as _XmlSyntaxError
 
 from plcdoc.model import (
-    GlobalVarList, GraphicalElement, Pou, PouInstance, Project, Task, Variable,
+    Attribute, DataType, EnumValue, GlobalVarList, GraphicalElement, Pou, PouInstance,
+    Project, Task, Variable,
 )
 
 PLCOPEN_NS_PREFIX = "http://www.plcopen.org/xml/tc6"
 XHTML_NS = "http://www.w3.org/1999/xhtml"
 CODESYS_POU_DATA = "http://www.3s-software.com/plcopenxml/pou"
+CODESYS_DATATYPE_DATA = "http://www.3s-software.com/plcopenxml/datatype"
+CODESYS_ATTRIBUTES = "http://www.3s-software.com/plcopenxml/attributes"
 CODESYS_MIXED_ATTRS = "http://www.3s-software.com/plcopenxml/mixedattrsvarlist"
 CODESYS_TASK_SETTINGS = "http://www.3s-software.com/plcopenxml/tasksettings"
 CODESYS_OBJECT_ID = "http://www.3s-software.com/plcopenxml/objectid"
@@ -137,9 +140,15 @@ def _collect(root: Element, ns: str, project: Project) -> None:
     interface belongs to that POU, never to the project).
     """
     unique_pous = _UniqueByOwner("POU", project.warnings)
+    unique_types = _UniqueByOwner("data type", project.warnings)
     standard_pous = "/".join([".", _q(ns, "types"), _q(ns, "pous"), _q(ns, "pou")])
+    standard_types = "/".join([".", _q(ns, "types"), _q(ns, "dataTypes"), _q(ns, "dataType")])
     for elem in root.findall(standard_pous):
         unique_pous.add(project.pous, _parse_pou(elem, ns, project.warnings, None, None))
+    for elem in root.findall(standard_types):
+        unique_types.add(
+            project.data_types, _parse_data_type(elem, ns, project.warnings, None, None),
+        )
     for elem, configuration, application in _walk(root, ns):
         if elem.tag == _q(ns, "data"):
             if elem.get("name") == CODESYS_POU_DATA:
@@ -147,6 +156,12 @@ def _collect(root: Element, ns: str, project: Project) -> None:
                     unique_pous.add(
                         project.pous,
                         _parse_pou(pou_elem, ns, project.warnings, configuration, application),
+                    )
+            elif elem.get("name") == CODESYS_DATATYPE_DATA:
+                for type_elem in elem.findall(_q(ns, "dataType")):
+                    unique_types.add(
+                        project.data_types,
+                        _parse_data_type(type_elem, ns, project.warnings, configuration, application),
                     )
         elif elem.tag in (_q(ns, "configuration"), _q(ns, "resource")):
             for gvl_elem in elem.findall(_q(ns, "globalVars")):
@@ -250,6 +265,89 @@ def _data_elements(elem: Element, ns: str, name: str) -> Iterator[Element]:
     for data in elem.findall("/".join([_q(ns, "addData"), _q(ns, "data")])):
         if data.get("name") == name:
             yield data
+
+
+# --------------------------------------------------------------------------- #
+# Parsing: data types
+# --------------------------------------------------------------------------- #
+
+# Children of <dataType> the parser interprets; anything else is residual.
+_DATA_TYPE_CHILDREN = frozenset({"baseType", "documentation", "addData"})
+
+
+def _parse_data_type(
+    elem: Element, ns: str, warnings: list[str],
+    configuration: str | None, application: str | None,
+) -> DataType:
+    name = elem.get("name", "")
+    data_type = DataType(
+        name=name, kind="other", comment=_documentation(elem, ns),
+        configuration=configuration, application=application,
+        attributes=_attributes(elem, ns),
+        vendor_xml=_residual_xml(elem, ns, {CODESYS_OBJECT_ID, CODESYS_ATTRIBUTES}, _DATA_TYPE_CHILDREN),
+    )
+    base = elem.find(_q(ns, "baseType"))
+    if base is None:
+        warnings.append(f"{name}: data type without baseType")
+        return data_type
+    data_type.base_type_xml = _canonical_xml(base)
+    children = [child for child in base if isinstance(child.tag, str)]
+    shape = _split(children[0].tag) if len(children) == 1 else ("", "")
+    if shape == (ns, "struct"):
+        data_type.kind = "struct"
+        data_type.members = _parse_variables(
+            children[0], ns, "struct", name, warnings, configuration, application,
+        )
+    elif shape == (ns, "enum"):
+        data_type.kind = "enum"
+        data_type.values = [
+            EnumValue(name=value.get("name", ""), value=value.get("value"))
+            for value in children[0].findall("/".join([_q(ns, "values"), _q(ns, "value")]))
+        ]
+        # CODESYS does not export the declared base type; only report one that is there.
+        enum_base = children[0].find(_q(ns, "baseType"))
+        if enum_base is not None:
+            data_type.base_type = _type_name(enum_base, ns, f"{name} base type", warnings)
+    else:
+        data_type.base_type = _type_name(base, ns, f"{name} base type", warnings)
+    return data_type
+
+
+def _attributes(elem: Element, ns: str) -> list[Attribute]:
+    """CODESYS pragmas from ``addData/data[@name=".../attributes"]/Attributes/Attribute``."""
+    return [
+        Attribute(name=attribute.get("Name", ""), value=attribute.get("Value", ""))
+        for data in _data_elements(elem, ns, CODESYS_ATTRIBUTES)
+        for attributes in data.findall(_q(ns, "Attributes"))
+        for attribute in attributes.findall(_q(ns, "Attribute"))
+    ]
+
+
+def _residual_xml(
+    elem: Element, ns: str, modelled_data: frozenset[str] | set[str], expected: frozenset[str],
+) -> list[str]:
+    """Canonical XML of what the parser does not interpret under *elem*.
+
+    Direct ``addData/data`` children whose name is not modelled, plus any
+    child element whose local name is not expected, in document order. Nested
+    objectid data is stripped from the fragments (GUIDs are noise, Decision
+    010); every other vendor detail stays.
+    """
+    residual = []
+    for child in elem:
+        if not isinstance(child.tag, str):
+            continue
+        namespace, local = _split(child.tag)
+        if namespace == ns and local == "addData":
+            for data in child:
+                if not isinstance(data.tag, str):
+                    continue
+                if data.tag == _q(ns, "data") and data.get("name") in modelled_data:
+                    continue
+                residual.append(_canonical_xml(data, residual=True))
+        elif namespace != ns or local not in expected:
+            residual.append(_canonical_xml(child, residual=True))
+    return residual
 
 
 # --------------------------------------------------------------------------- #
@@ -492,20 +590,21 @@ def _graphical_noise(elem: Element) -> bool:
 _XML_NS = "http://www.w3.org/XML/1998/namespace"
 
 
-def _canonical_xml(elem: Element, *, graphical: bool = False) -> str:
+def _canonical_xml(elem: Element, *, graphical: bool = False, residual: bool = False) -> str:
     """Canonical XML with deterministic prefixes and lossless text content.
 
     Sorted namespace URIs receive ``n0``, ``n1``, ... independently of source
     prefixes, attribute order and ``ET.register_namespace``. C14N 2.0 sorts
     attributes. Only indentation in element-only content is removed, respecting
     inherited ``xml:space``; leaf and mixed-content text stays verbatim.
-    Graphical bodies also lose the documented noise elements. The caller's
-    tree is never modified and no Element escapes into the model.
+    Graphical bodies also lose the documented noise elements; residual vendor
+    fragments lose only nested objectid data. The caller's tree is never
+    modified and no Element escapes into the model.
 
     Assigning prefixes ourselves avoids CPython's prefix rewriter emitting
     invalid empty-namespace declarations next to unprefixed attributes.
     """
-    fragment = _rebuild(elem, graphical)
+    fragment = _rebuild(elem, graphical, residual=residual)
     namespaces = {
         _split(name)[0]
         for node in fragment.iter()
@@ -533,7 +632,20 @@ def _prefixed(tag: str, prefixes: dict[str, str]) -> str:
     return f"{prefixes[namespace]}:{local}"
 
 
-def _rebuild(elem: Element, graphical: bool, preserve_space: bool = False) -> Element:
+def _object_id_noise(elem: Element) -> bool:
+    """A CODESYS ``data[@name=".../objectid"]`` element (GUID noise, Decision 010)."""
+    if not isinstance(elem.tag, str):
+        return True
+    namespace, local = _split(elem.tag)
+    return (
+        namespace.startswith(PLCOPEN_NS_PREFIX) and local == "data"
+        and elem.get("name") == CODESYS_OBJECT_ID
+    )
+
+
+def _rebuild(
+    elem: Element, graphical: bool, preserve_space: bool = False, residual: bool = False,
+) -> Element:
     # A filtered rebuild instead of deepcopy: it drops the root's tail (which
     # tostring would emit after the element), XML comments and, for graphical
     # bodies, the noise elements. canonicalize's exclude_tags cannot filter by
@@ -548,8 +660,10 @@ def _rebuild(elem: Element, graphical: bool, preserve_space: bool = False) -> El
     copy = Element(elem.tag, dict(elem.attrib))
     copy.text = None if drop_indentation else elem.text
     for child in elem:
-        if isinstance(child.tag, str) and not (graphical and _graphical_noise(child)):
-            copy.append(_rebuild(child, graphical, preserve_space))
+        if isinstance(child.tag, str) and not (
+            (graphical and _graphical_noise(child)) or (residual and _object_id_noise(child))
+        ):
+            copy.append(_rebuild(child, graphical, preserve_space, residual))
         # Tails belong to this parent's content, even when their element was
         # excluded. A child's xml:space setting never governs its own tail.
         if not drop_indentation and child.tail:

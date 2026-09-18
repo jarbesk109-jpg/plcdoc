@@ -151,6 +151,37 @@ class GlobalVarList:
 
 
 @dataclass(frozen=True)
+class Attribute:
+    """A CODESYS ``{attribute '...'}`` pragma, in declaration order."""
+
+    name: str
+    value: str  # "" for a flag pragma such as {attribute 'qualified_only'}
+
+
+@dataclass(frozen=True)
+class EnumValue:
+    name: str
+    value: str | None  # explicit value text ("0", "10"); None when the export has none
+
+
+@dataclass
+class DataType:
+    """A user data type (DUT): STRUCT, ENUM or another base type."""
+
+    name: str
+    kind: str  # "struct" | "enum" | "other"
+    base_type: str | None = None  # enum: enum/baseType when exported (CODESYS omits it), else None
+    base_type_xml: str | None = None  # canonical <baseType>, always kept
+    members: list[Variable] = field(default_factory=list)  # struct fields: scope = DUT name, section "struct"
+    values: list[EnumValue] = field(default_factory=list)  # enum values
+    attributes: list[Attribute] = field(default_factory=list)
+    comment: str = ""
+    configuration: str | None = None
+    application: str | None = None
+    vendor_xml: list[str] = field(default_factory=list)  # unmodelled addData and unexpected children
+
+
+@dataclass(frozen=True)
 class PouInstance:
     instance_name: str
     type_name: str  # falls back to instance_name when CODESYS leaves typeName empty
@@ -175,6 +206,7 @@ class Project:
     gvls: list[GlobalVarList] = field(default_factory=list)
     tasks: list[Task] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    data_types: list[DataType] = field(default_factory=list)
 
     def all_variables(self) -> Iterator[Variable]:
         """Every variable: global variable lists first, then POUs, in parse order."""

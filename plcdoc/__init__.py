@@ -2,6 +2,9 @@
 
 from plcdoc.model import (
     Address,
+    Attribute,
+    DataType,
+    EnumValue,
     GlobalVarList,
     GraphicalElement,
     Pou,
@@ -17,6 +20,9 @@ __version__ = "0.0.1"
 
 __all__ = [
     "Address",
+    "Attribute",
+    "DataType",
+    "EnumValue",
     "GlobalVarList",
     "GraphicalElement",
     "ParseError",

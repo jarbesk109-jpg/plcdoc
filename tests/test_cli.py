@@ -9,7 +9,7 @@ import pytest
 from plcdoc.cli import main
 from plcdoc.render import markdown_table
 
-from conftest import LARGE, SMALL_V1, TYPES_QUALIFIERS
+from conftest import DRIVE_OOP, LARGE, SMALL_V1, TYPES_QUALIFIERS
 
 
 def test_parse_prints_io_table_and_variables(capsys):
@@ -140,6 +140,15 @@ def test_terminal_table_keeps_comment_text_verbatim():
 def test_terminal_cells_only_escape_pipes_and_flatten_newlines(value, expected):
     table = markdown_table(("C",), [(value,)])
     assert table.splitlines()[2] == f"| {expected} |"
+
+
+def test_sample05_json(capsys):
+    assert main(["parse", str(DRIVE_OOP), "--json"]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    data = json.loads(captured.out)
+    assert data["data_types"][0]["values"][1] == {"name": "RUNNING", "value": "10"}
+    assert data["data_types"][1]["members"][0]["section"] == "struct"
 
 
 def test_sample04_table_shows_placeholders_not_xml(capsys):
