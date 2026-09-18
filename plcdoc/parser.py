@@ -35,7 +35,7 @@ from defusedxml.ElementTree import ParseError as _XmlSyntaxError
 
 from plcdoc.model import (
     Accessor, Action, Attribute, DataType, EnumValue, GlobalVarList, GraphicalElement,
-    Method, Pou, PouInstance, Project, Property, Task, Variable,
+    Method, Pou, PouInstance, Project, Property, StructureNode, Task, Variable,
 )
 
 PLCOPEN_NS_PREFIX = "http://www.plcopen.org/xml/tc6"
@@ -45,6 +45,21 @@ CODESYS_DATATYPE_DATA = "http://www.3s-software.com/plcopenxml/datatype"
 CODESYS_ATTRIBUTES = "http://www.3s-software.com/plcopenxml/attributes"
 CODESYS_METHOD_DATA = "http://www.3s-software.com/plcopenxml/method"
 CODESYS_PROPERTY_DATA = "http://www.3s-software.com/plcopenxml/property"
+CODESYS_PROJECT_STRUCTURE = "http://www.3s-software.com/plcopenxml/projectstructure"
+
+# Elements whose addData/objectid identifies them in ProjectStructure -> node kind.
+_OBJECT_KINDS = {
+    "configuration": "configuration",
+    "resource": "application",
+    "globalVars": "gvl",
+    "pou": "pou",
+    "action": "action",
+    "dataType": "datatype",
+    "task": "task",
+    "Libraries": "libraries",
+}
+# Elements that carry their ObjectId as an attribute instead.
+_OBJECT_ID_ATTRIBUTE_KINDS = {"Method": "method", "Property": "property"}
 CODESYS_MIXED_ATTRS = "http://www.3s-software.com/plcopenxml/mixedattrsvarlist"
 CODESYS_TASK_SETTINGS = "http://www.3s-software.com/plcopenxml/tasksettings"
 CODESYS_OBJECT_ID = "http://www.3s-software.com/plcopenxml/objectid"
@@ -123,6 +138,7 @@ def parse_element(root: Element) -> Project:
         product_version=_attr(root.find(_q(ns, "fileHeader")), "productVersion", ""),
     )
     _collect(root, ns, project)
+    project.structure = _collect_structure(root, ns, _object_kinds(root, ns))
     return project
 
 
@@ -214,6 +230,48 @@ class _UniqueByOwner:
                 return
         previous.append(obj)
         target.append(obj)
+
+
+def _object_kinds(root: Element, ns: str) -> dict[str, str]:
+    """ObjectId -> node kind for every exported object, used only to label ProjectStructure.
+
+    The GUID sits in ``addData/data[@name=".../objectid"]/ObjectId`` on most
+    objects and in an ``ObjectId`` attribute on CODESYS ``Method`` /
+    ``Property``. Nothing here is stored in the model (Decision 010).
+    """
+    kinds: dict[str, str] = {}
+    for elem in root.iter():
+        if not isinstance(elem.tag, str):
+            continue
+        namespace, local = _split(elem.tag)
+        if namespace != ns:
+            continue
+        if local in _OBJECT_KINDS:
+            for data in _data_elements(elem, ns, CODESYS_OBJECT_ID):
+                for object_id in data.findall(_q(ns, "ObjectId")):
+                    if object_id.text and object_id.text.strip():
+                        kinds.setdefault(object_id.text.strip(), _OBJECT_KINDS[local])
+        elif local in _OBJECT_ID_ATTRIBUTE_KINDS and elem.get("ObjectId"):
+            kinds.setdefault(elem.get("ObjectId", ""), _OBJECT_ID_ATTRIBUTE_KINDS[local])
+    return kinds
+
+
+def _collect_structure(root: Element, ns: str, kinds: dict[str, str]) -> list[StructureNode]:
+    """Every ``ProjectStructure`` tree under the project's own addData, labelled by *kinds*."""
+
+    def node(obj: Element) -> StructureNode:
+        return StructureNode(
+            name=obj.get("Name", ""),
+            kind=kinds.get(obj.get("ObjectId", "")),
+            children=[node(child) for child in obj.findall(_q(ns, "Object"))],
+        )
+
+    return [
+        node(obj)
+        for data in _data_elements(root, ns, CODESYS_PROJECT_STRUCTURE)
+        for structure in data.findall(_q(ns, "ProjectStructure"))
+        for obj in structure.findall(_q(ns, "Object"))
+    ]
 
 
 def _parse_gvl(

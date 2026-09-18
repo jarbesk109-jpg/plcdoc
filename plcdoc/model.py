@@ -262,6 +262,22 @@ class Task:
 
 
 @dataclass
+class StructureNode:
+    """One node of the CODESYS project tree (``ProjectStructure``).
+
+    ``kind`` comes from joining the node's ObjectId with the objects the parser
+    read: ``configuration``, ``application``, ``gvl``, ``pou``, ``datatype``,
+    ``task``, ``libraries``, ``method``, ``action`` or ``property``. ``None``
+    means no exported object carries that ObjectId (a folder, or an object
+    kind the parser does not model). The GUIDs themselves are not stored.
+    """
+
+    name: str
+    kind: str | None = None
+    children: list[StructureNode] = field(default_factory=list)
+
+
+@dataclass
 class Project:
     name: str
     product_version: str
@@ -270,6 +286,7 @@ class Project:
     tasks: list[Task] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     data_types: list[DataType] = field(default_factory=list)
+    structure: list[StructureNode] = field(default_factory=list)  # roots, usually one Device
 
     def all_variables(self) -> Iterator[Variable]:
         """Every declared variable in parse order.

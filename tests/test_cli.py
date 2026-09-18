@@ -151,6 +151,8 @@ def test_sample05_json(capsys):
     assert data["data_types"][1]["members"][0]["section"] == "struct"
     assert data["pous"][1]["methods"][0]["variables"][1]["scope"] == "FB_Drive.M_Start"
     assert data["pous"][1]["properties"][0]["getter"]["body_text"] == " P_Speed := rSpeed;"
+    assert data["structure"][0]["children"][0]["name"] == "Application"
+    assert data["structure"][0]["children"][0]["children"][-1]["kind"] == "pou"
 
     assert main(["parse", str(DRIVE_OOP)]) == 0
     out = capsys.readouterr().out

@@ -13,7 +13,7 @@ import pytest
 from plcdoc import PouInstance, parse_file
 from plcdoc.parser import parse_element
 
-from conftest import LARGE, TYPES_QUALIFIERS
+from conftest import LARGE, TYPES_QUALIFIERS, relabel_object_ids
 
 NS = {"p": "http://www.plcopen.org/xml/tc6_0200"}
 PREFIX = "{" + NS["p"] + "}"
@@ -439,11 +439,14 @@ def test_parse_element_is_pure_and_ignores_documented_noise():
     assert ET.tostring(root) == xml_before
     for position in root.findall(".//p:LD//p:position", NS):
         position.set("x", "99")
-    for obj in root.iter(PREFIX + "ObjectId"):
-        obj.text = "another-guid"
+    relabel_object_ids(root)  # consistently: the GUIDs change, the joins do not
     root.find("p:fileHeader", NS).set("creationDateTime", "2020-01-01T00:00:00")
     root.find("p:contentHeader", NS).set("modificationDateTime", "2020-01-01T00:00:00")
-    assert parse_element(root) == before
+    after = parse_element(root)
+    assert after == before
+    assert [n.kind for n in after.structure[0].children[0].children] == [
+        n.kind for n in before.structure[0].children[0].children
+    ]
     assert parse_file(LARGE) == before
 
 

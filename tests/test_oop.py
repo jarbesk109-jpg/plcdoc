@@ -69,6 +69,7 @@ def _object_ids(root):
 def test_relabel_object_ids_helper():
     """A no-op helper would pass every GUID-noise test; prove it really relabels."""
     root = ET.parse(DRIVE_OOP).getroot()
+    structure_before = parse_element(root).structure
     texts_before, attributes_before = _object_ids(root)
     originals = set(texts_before) | set(attributes_before)
     # configuration, resource, task, 2 DUTs, 2 POUs, action, method, property, Libraries;
@@ -90,6 +91,7 @@ def test_relabel_object_ids_helper():
     assert text_id(".//p:dataType[@name='ST_Drive']/p:addData/p:data/p:ObjectId") == node_id("ST_Drive")
     assert root.find(".//p:Method[@name='M_Start']", NS).get("ObjectId") == node_id("M_Start")
     assert node_id("ST_Drive") != node_id("M_Start")
+    assert parse_element(root).structure == structure_before  # joins still resolve
 
 
 # --------------------------------------------------------------------------- #
@@ -445,3 +447,83 @@ def test_member_object_ids_are_noise():
     root = ET.parse(DRIVE_OOP).getroot()
     before = parse_element(root)
     assert parse_element(relabel_object_ids(root)) == before
+
+
+# --------------------------------------------------------------------------- #
+# Commit 5: ProjectStructure joined by ObjectId
+# --------------------------------------------------------------------------- #
+
+
+def _tree(nodes):
+    return [(n.name, n.kind, _tree(n.children)) for n in nodes]
+
+
+def test_sample05_structure(drive_oop):
+    assert _tree(drive_oop.structure) == [
+        ("Device", "configuration", [
+            ("Application", "application", [
+                ("Library Manager", "libraries", []),
+                ("PLC_PRG", "pou", []),
+                ("MainTask", "task", []),
+                ("E_DriveState", "datatype", []),
+                ("ST_Drive", "datatype", []),
+                ("FB_Drive", "pou", [
+                    ("M_Start", "method", []),
+                    ("A_Reset", "action", []),
+                    ("P_Speed", "property", []),
+                ]),
+            ]),
+        ]),
+    ]
+
+
+def test_sample03_structure_has_gvl_kind(large):
+    application = large.structure[0].children[0]
+    kinds = {node.name: node.kind for node in application.children}
+    assert kinds["GVL_IO"] == "gvl"
+    assert kinds["PRG_Alarm"] == "pou"
+    assert None not in kinds.values()
+
+
+def test_structure_unknown_object_is_a_folder():
+    """SYNTHETIC: a folder has an ObjectId that matches no exported object; no warning."""
+    root = ET.parse(DRIVE_OOP).getroot()
+    application = root.find(".//p:ProjectStructure/p:Object/p:Object", NS)
+    prg = application.find("p:Object[@Name='PLC_PRG']", NS)
+    application.remove(prg)
+    folder = ET.SubElement(application, PREFIX + "Object", Name="Folder", ObjectId="f01de000-0000-4000-8000-000000000001")
+    folder.append(prg)
+    project = parse_element(root)
+    folder_node = next(n for n in project.structure[0].children[0].children if n.name == "Folder")
+    assert folder_node.kind is None
+    assert _tree(folder_node.children) == [("PLC_PRG", "pou", [])]
+    assert project.warnings == []
+
+
+@pytest.mark.parametrize("xpath,attribute,node_name", [
+    (STRUCT + "/p:addData/p:data/p:ObjectId", None, "ST_Drive"),
+    (METHOD, "ObjectId", "M_Start"),
+], ids=["datatype-text-id", "method-attribute-id"])
+def test_broken_join_changes_kind(xpath, attribute, node_name):
+    """Changing only the declaration's GUID (not the structure's) breaks that one join."""
+    root = ET.parse(DRIVE_OOP).getroot()
+    before = parse_element(root)
+    target = root.find(xpath, NS)
+    if attribute is None:
+        target.text = "deadbeef-0000-4000-8000-000000000000"
+    else:
+        target.set(attribute, "deadbeef-0000-4000-8000-000000000000")
+    after = parse_element(root)
+    assert after != before
+
+    def find(nodes):
+        for node in nodes:
+            if node.name == node_name:
+                return node
+            found = find(node.children)
+            if found is not None:
+                return found
+        return None
+
+    assert find(before.structure).kind is not None
+    assert find(after.structure).kind is None
