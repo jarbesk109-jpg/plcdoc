@@ -34,8 +34,8 @@ from defusedxml import ElementTree as DefusedET
 from defusedxml.ElementTree import ParseError as _XmlSyntaxError
 
 from plcdoc.model import (
-    Attribute, DataType, EnumValue, GlobalVarList, GraphicalElement, Pou, PouInstance,
-    Project, Task, Variable,
+    Accessor, Action, Attribute, DataType, EnumValue, GlobalVarList, GraphicalElement,
+    Method, Pou, PouInstance, Project, Property, Task, Variable,
 )
 
 PLCOPEN_NS_PREFIX = "http://www.plcopen.org/xml/tc6"
@@ -43,6 +43,8 @@ XHTML_NS = "http://www.w3.org/1999/xhtml"
 CODESYS_POU_DATA = "http://www.3s-software.com/plcopenxml/pou"
 CODESYS_DATATYPE_DATA = "http://www.3s-software.com/plcopenxml/datatype"
 CODESYS_ATTRIBUTES = "http://www.3s-software.com/plcopenxml/attributes"
+CODESYS_METHOD_DATA = "http://www.3s-software.com/plcopenxml/method"
+CODESYS_PROPERTY_DATA = "http://www.3s-software.com/plcopenxml/property"
 CODESYS_MIXED_ATTRS = "http://www.3s-software.com/plcopenxml/mixedattrsvarlist"
 CODESYS_TASK_SETTINGS = "http://www.3s-software.com/plcopenxml/tasksettings"
 CODESYS_OBJECT_ID = "http://www.3s-software.com/plcopenxml/objectid"
@@ -355,6 +357,15 @@ def _residual_xml(
 # --------------------------------------------------------------------------- #
 
 
+_POU_CHILDREN = frozenset({"interface", "actions", "body", "documentation", "addData"})
+_ACTION_CHILDREN = frozenset({"body", "documentation", "addData"})
+_METHOD_CHILDREN = frozenset({"interface", "body", "documentation", "addData"})
+_PROPERTY_CHILDREN = frozenset(
+    {"interface", "SetAccessor", "GetAccessor", "documentation", "addData"}
+)
+_OBJECT_ID_ONLY = frozenset({CODESYS_OBJECT_ID})
+
+
 def _parse_pou(
     elem: Element, ns: str, warnings: list[str],
     configuration: str | None, application: str | None,
@@ -364,34 +375,154 @@ def _parse_pou(
         name=name, pou_type=elem.get("pouType", ""),
         configuration=configuration, application=application,
         comment=_documentation(elem, ns),
+        vendor_xml=_residual_xml(
+            elem, ns, {CODESYS_OBJECT_ID, CODESYS_METHOD_DATA, CODESYS_PROPERTY_DATA}, _POU_CHILDREN,
+        ),
     )
-
-    interface = elem.find(_q(ns, "interface"))
-    if interface is not None:
-        if not pou.comment:
-            pou.comment = _documentation(interface, ns)
-        for child in interface:
-            local = _local(child.tag)
-            if local == "returnType":
-                pou.return_type = _type_name(child, ns, f"{name} return type", warnings)
-                pou.return_type_xml = _canonical_xml(child)
-            elif local in _INTERFACE_NON_SECTIONS:
-                continue
-            else:
-                section = _section_name(local)
-                if section is None:
-                    warnings.append(f"{name}: unknown interface element <{local}> skipped")
-                    continue
-                if section not in KNOWN_SECTIONS:
-                    warnings.append(f"{name}: unrecognised variable section <{local}>")
-                pou.variables.extend(_parse_variables(
-                    child, ns, section, name, warnings, configuration, application,
-                ))
-
+    interface = _parse_interface(elem, ns, name, warnings, configuration, application)
+    pou.return_type, pou.return_type_xml = interface.return_type, interface.return_type_xml
+    pou.variables, pou.interface_vendor_xml = interface.variables, interface.vendor_xml
+    pou.comment = pou.comment or interface.comment
     body = elem.find(_q(ns, "body"))
     if body is not None:
         _parse_body(body, ns, pou)
+    for actions in elem.findall(_q(ns, "actions")):
+        for action in actions.findall(_q(ns, "action")):
+            pou.actions.append(_parse_action(action, ns))
+    for data in _data_elements(elem, ns, CODESYS_METHOD_DATA):
+        for method in data.findall(_q(ns, "Method")):
+            pou.methods.append(
+                _parse_method(method, ns, name, warnings, configuration, application)
+            )
+    for data in _data_elements(elem, ns, CODESYS_PROPERTY_DATA):
+        for prop in data.findall(_q(ns, "Property")):
+            pou.properties.append(
+                _parse_property(prop, ns, name, warnings, configuration, application)
+            )
     return pou
+
+
+class _Interface:
+    """What an ``<interface>`` element contributes to its owner."""
+
+    def __init__(self) -> None:
+        self.return_type: str | None = None
+        self.return_type_xml: str | None = None
+        self.variables: list[Variable] = []
+        self.vendor_xml: list[str] = []
+        self.comment = ""
+
+
+def _parse_interface(
+    owner: Element, ns: str, scope: str, warnings: list[str],
+    configuration: str | None, application: str | None,
+) -> _Interface:
+    """Parse ``owner/interface`` the same way for POUs, methods and accessors.
+
+    *scope* is the scope path stored on every variable (``FB_Drive``,
+    ``FB_Drive.M_Start``, ``FB_Drive.P_Speed.Get``).
+    """
+    result = _Interface()
+    interface = owner.find(_q(ns, "interface"))
+    if interface is None:
+        return result
+    result.comment = _documentation(interface, ns)
+    for child in interface:
+        if not isinstance(child.tag, str):
+            continue
+        namespace, local = _split(child.tag)
+        if namespace == ns and local == "returnType":
+            result.return_type = _type_name(child, ns, f"{scope} return type", warnings)
+            result.return_type_xml = _canonical_xml(child)
+        elif namespace == ns and local == "documentation":
+            continue
+        elif namespace == ns and local == "addData":
+            result.vendor_xml.extend(_residual_xml(interface, ns, _OBJECT_ID_ONLY, frozenset(
+                _local(other.tag) for other in interface if isinstance(other.tag, str)
+            )))
+        else:
+            section = _section_name(local) if namespace == ns else None
+            if section is None:
+                warnings.append(f"{scope}: unknown interface element <{local}> skipped")
+                result.vendor_xml.append(_canonical_xml(child, residual=True))
+                continue
+            if section not in KNOWN_SECTIONS:
+                warnings.append(f"{scope}: unrecognised variable section <{local}>")
+            result.variables.extend(_parse_variables(
+                child, ns, section, scope, warnings, configuration, application,
+            ))
+    return result
+
+
+def _parse_action(elem: Element, ns: str) -> Action:
+    action = Action(
+        name=elem.get("name", ""), comment=_documentation(elem, ns),
+        vendor_xml=_residual_xml(elem, ns, _OBJECT_ID_ONLY, _ACTION_CHILDREN),
+    )
+    body = elem.find(_q(ns, "body"))
+    if body is not None:
+        _parse_body(body, ns, action)
+    return action
+
+
+def _parse_method(
+    elem: Element, ns: str, pou_name: str, warnings: list[str],
+    configuration: str | None, application: str | None,
+) -> Method:
+    scope = f"{pou_name}.{elem.get('name', '')}"
+    interface = _parse_interface(elem, ns, scope, warnings, configuration, application)
+    method = Method(
+        name=elem.get("name", ""),
+        return_type=interface.return_type, return_type_xml=interface.return_type_xml,
+        variables=interface.variables,
+        comment=_documentation(elem, ns) or interface.comment,
+        interface_vendor_xml=interface.vendor_xml,
+        vendor_xml=_residual_xml(elem, ns, _OBJECT_ID_ONLY, _METHOD_CHILDREN),
+    )
+    body = elem.find(_q(ns, "body"))
+    if body is not None:
+        _parse_body(body, ns, method)
+    return method
+
+
+def _parse_property(
+    elem: Element, ns: str, pou_name: str, warnings: list[str],
+    configuration: str | None, application: str | None,
+) -> Property:
+    name = elem.get("name", "")
+    scope = f"{pou_name}.{name}"
+    interface = _parse_interface(elem, ns, scope, warnings, configuration, application)
+    if interface.variables:
+        warnings.append(f"{scope}: variables declared on the property itself are ignored")
+    prop = Property(
+        name=name, type=interface.return_type, type_xml=interface.return_type_xml,
+        comment=_documentation(elem, ns) or interface.comment,
+        interface_vendor_xml=interface.vendor_xml,
+        vendor_xml=_residual_xml(elem, ns, _OBJECT_ID_ONLY, _PROPERTY_CHILDREN),
+    )
+    for kind in ("Get", "Set"):
+        accessor_elem = elem.find(_q(ns, f"{kind}Accessor"))
+        if accessor_elem is not None:
+            accessor = _parse_accessor(
+                accessor_elem, ns, kind, f"{scope}.{kind}", warnings, configuration, application,
+            )
+            setattr(prop, "getter" if kind == "Get" else "setter", accessor)
+    return prop
+
+
+def _parse_accessor(
+    elem: Element, ns: str, kind: str, scope: str, warnings: list[str],
+    configuration: str | None, application: str | None,
+) -> Accessor:
+    interface = _parse_interface(elem, ns, scope, warnings, configuration, application)
+    accessor = Accessor(
+        kind=kind, variables=interface.variables, interface_vendor_xml=interface.vendor_xml,
+        vendor_xml=_residual_xml(elem, ns, _OBJECT_ID_ONLY, _METHOD_CHILDREN),
+    )
+    body = elem.find(_q(ns, "body"))
+    if body is not None:
+        _parse_body(body, ns, accessor)
+    return accessor
 
 
 def _section_name(local_tag: str) -> str | None:
@@ -531,7 +662,8 @@ def _documentation(elem: Element, ns: str) -> str:
     return "".join(source.itertext()).strip()
 
 
-def _parse_body(body: Element, ns: str, pou: Pou) -> None:
+def _parse_body(body: Element, ns: str, pou: Pou | Action | Method | Accessor) -> None:
+    """Fill the four body fields of any code unit (POU, action, method, accessor)."""
     for child in body:
         local = _local(child.tag)
         if local in ("addData", "documentation"):

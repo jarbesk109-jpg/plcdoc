@@ -125,6 +125,64 @@ class GraphicalElement:
 
 
 @dataclass
+class Action:
+    """A POU action: a second body sharing the POU's variables (no interface of its own)."""
+
+    name: str
+    body_language: str | None = None
+    body_text: str | None = None
+    graphical_body: list[GraphicalElement] = field(default_factory=list)
+    body_xml: str | None = None
+    comment: str = ""
+    vendor_xml: list[str] = field(default_factory=list)  # action/addData not modelled + unexpected children
+
+
+@dataclass
+class Method:
+    """A CODESYS method of a function block or program. Variable scope is ``FB.Method``."""
+
+    name: str
+    return_type: str | None = None
+    return_type_xml: str | None = None
+    variables: list[Variable] = field(default_factory=list)
+    body_language: str | None = None
+    body_text: str | None = None
+    graphical_body: list[GraphicalElement] = field(default_factory=list)
+    body_xml: str | None = None
+    comment: str = ""
+    interface_vendor_xml: list[str] = field(default_factory=list)  # Method/interface/addData
+    vendor_xml: list[str] = field(default_factory=list)  # Method/addData not modelled + unexpected children
+
+
+@dataclass
+class Accessor:
+    """One property accessor. Variable scope is ``FB.Property.Get`` / ``FB.Property.Set``."""
+
+    kind: str  # "Get" | "Set"
+    variables: list[Variable] = field(default_factory=list)
+    body_language: str | None = None
+    body_text: str | None = None
+    graphical_body: list[GraphicalElement] = field(default_factory=list)
+    body_xml: str | None = None
+    interface_vendor_xml: list[str] = field(default_factory=list)  # accessor/interface/addData
+    vendor_xml: list[str] = field(default_factory=list)  # accessor/addData not modelled + unexpected children
+
+
+@dataclass
+class Property:
+    """A CODESYS property: a type plus optional Get and Set accessors."""
+
+    name: str
+    type: str | None = None  # readable, from Property/interface/returnType
+    type_xml: str | None = None
+    getter: Accessor | None = None
+    setter: Accessor | None = None  # named fields: the XML order of the accessors is irrelevant
+    comment: str = ""
+    interface_vendor_xml: list[str] = field(default_factory=list)  # Property/interface/addData (AccessModifiers)
+    vendor_xml: list[str] = field(default_factory=list)  # Property/addData not modelled + unexpected children
+
+
+@dataclass
 class Pou:
     """A program organisation unit: program, functionBlock or function."""
 
@@ -140,6 +198,11 @@ class Pou:
     return_type_xml: str | None = None
     graphical_body: list[GraphicalElement] = field(default_factory=list)
     body_xml: str | None = None  # canonical graphical body, including vendor/FBD/CFC details
+    methods: list[Method] = field(default_factory=list)
+    actions: list[Action] = field(default_factory=list)
+    properties: list[Property] = field(default_factory=list)
+    interface_vendor_xml: list[str] = field(default_factory=list)  # pou/interface/addData
+    vendor_xml: list[str] = field(default_factory=list)  # pou/addData not modelled + unexpected children
 
 
 @dataclass
@@ -209,11 +272,23 @@ class Project:
     data_types: list[DataType] = field(default_factory=list)
 
     def all_variables(self) -> Iterator[Variable]:
-        """Every variable: global variable lists first, then POUs, in parse order."""
+        """Every declared variable in parse order.
+
+        Global variable lists first; then, per POU, its own variables, its
+        methods' variables and its properties' accessor variables (Get before
+        Set, whatever the XML order). Struct fields are type members, not
+        variables, and are not included.
+        """
         for gvl in self.gvls:
             yield from gvl.variables
         for pou in self.pous:
             yield from pou.variables
+            for method in pou.methods:
+                yield from method.variables
+            for prop in pou.properties:
+                for accessor in (prop.getter, prop.setter):
+                    if accessor is not None:
+                        yield from accessor.variables
 
     def io_variables(self) -> Iterator[Variable]:
         """Variables that carry a direct address."""

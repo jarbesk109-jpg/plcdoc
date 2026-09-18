@@ -205,3 +205,243 @@ def test_duplicate_data_types_follow_pou_rule(conflicting):
     )
     expected = "conflicting definition retained" if conflicting else "identical definition ignored"
     assert project.warnings == [f"duplicate data type 'E_DriveState' in 'Device'/'Application': {expected}"]
+
+
+# --------------------------------------------------------------------------- #
+# Commit 4: methods, actions, properties
+# --------------------------------------------------------------------------- #
+
+FB = ".//p:pou[@name='FB_Drive']"
+METHOD = FB + "//p:Method[@name='M_Start']"
+PROPERTY = FB + "//p:Property[@name='P_Speed']"
+M_START_BODY = (
+    "xOk := rTarget >= 0.0;\n"
+    "IF xOk THEN\n"
+    "    stData.rSpeedSet := rTarget;\n"
+    "    stData.eState := E_DriveState.RUNNING;\n"
+    "END_IF\n"
+    "M_Start := xOk;"
+)
+
+
+def _pou(project, name):
+    return next(p for p in project.pous if p.name == name)
+
+
+def test_sample05_fb_drive_members(drive_oop):
+    fb = _pou(drive_oop, "FB_Drive")
+    assert [m.name for m in fb.methods] == ["M_Start"]
+    method = fb.methods[0]
+    assert method.return_type == "BOOL"
+    assert [(v.name, v.type, v.section, v.scope) for v in method.variables] == [
+        ("rTarget", "REAL", "input", "FB_Drive.M_Start"),
+        ("xOk", "BOOL", "local", "FB_Drive.M_Start"),
+    ]
+    assert method.body_language == "ST" and method.body_text == M_START_BODY
+    assert method.vendor_xml == [] and method.interface_vendor_xml == []
+
+    assert [a.name for a in fb.actions] == ["A_Reset"]
+    assert fb.actions[0].body_text == "stData.eState := E_DriveState.IDLE;\nstData.rSpeedSet := 0.0;"
+    assert fb.actions[0].vendor_xml == []
+
+    assert [p.name for p in fb.properties] == ["P_Speed"]
+    prop = fb.properties[0]
+    assert prop.type == "REAL"
+    assert (prop.getter.kind, prop.setter.kind) == ("Get", "Set")
+    assert prop.setter.body_text == "rSpeed := P_Speed;"
+    assert prop.getter.body_text == " P_Speed := rSpeed;"  # leading space typed in the editor
+    assert prop.getter.variables == [] and prop.setter.variables == []
+    assert len(prop.interface_vendor_xml) == 1 and "AccessModifiers" in prop.interface_vendor_xml[0]
+    assert prop.vendor_xml == []
+
+    assert fb.vendor_xml == [] and fb.interface_vendor_xml == []
+    prg = _pou(drive_oop, "PLC_PRG")
+    assert (prg.methods, prg.actions, prg.properties) == ([], [], [])
+    assert drive_oop.warnings == []
+
+
+def test_sample05_all_variables_includes_member_scopes(drive_oop):
+    P, F, M = "PLC_PRG", "FB_Drive", "FB_Drive.M_Start"
+    names = [(v.scope, v.name) for v in drive_oop.all_variables()]
+    assert names == [
+        (P, "fbDrive"), (P, "xStart"), (P, "xOk"), (P, "rActual"),
+        (F, "xEnable"), (F, "xRunning"), (F, "stData"), (F, "rSpeed"),
+        (M, "rTarget"), (M, "xOk"),
+    ]
+    assert len({v.identity for v in drive_oop.all_variables()}) == 10
+
+
+def _declare(interface, name, type_tag="BOOL", section="localVars", **attrs):
+    section_elem = interface.find("p:" + section, NS)
+    if section_elem is None:
+        section_elem = ET.SubElement(interface, PREFIX + section)
+    var = ET.SubElement(section_elem, PREFIX + "variable", name=name, **attrs)
+    ET.SubElement(ET.SubElement(var, PREFIX + "type"), PREFIX + type_tag)
+    return var
+
+
+@pytest.mark.parametrize("swapped", [False, True])
+def test_accessor_variables_are_get_then_set(swapped):
+    """SYNTHETIC: accessor variables follow the model order Get, Set, not the XML order."""
+    root = ET.parse(DRIVE_OOP).getroot()
+    prop = root.find(PROPERTY, NS)
+    _declare(prop.find("p:GetAccessor/p:interface", NS), "xG")
+    _declare(prop.find("p:SetAccessor/p:interface", NS), "xS")
+    if swapped:
+        setter = prop.find("p:SetAccessor", NS)
+        prop.remove(setter)
+        prop.insert(list(prop).index(prop.find("p:GetAccessor", NS)) + 1, setter)
+    project = parse_element(root)
+    assert [(v.scope, v.name) for v in project.all_variables()][-2:] == [
+        ("FB_Drive.P_Speed.Get", "xG"), ("FB_Drive.P_Speed.Set", "xS"),
+    ]
+    assert project.warnings == []
+
+
+def test_addressed_method_variable_enters_io_table():
+    """SYNTHETIC: Decision 012 consequence — io_table() sees method variables."""
+    from plcdoc.tables import io_table
+
+    root = ET.parse(DRIVE_OOP).getroot()
+    root.find(METHOD + "//p:variable[@name='rTarget']", NS).set("address", "%IW9")
+    rows = io_table(parse_element(root))
+    assert [(r.address, r.direction, r.name, r.type, r.scope) for r in rows] == [
+        ("%IW9", "input", "rTarget", "REAL", "FB_Drive.M_Start"),
+    ]
+
+
+MEMBER_CASES = [
+    (METHOD + "/p:interface/p:returnType/p:BOOL", "tag", PREFIX + "INT",
+     lambda p: _pou(p, "FB_Drive").methods[0].return_type),
+    (METHOD + "//p:variable[@name='rTarget']/p:type/p:REAL", "tag", PREFIX + "LREAL",
+     lambda p: _pou(p, "FB_Drive").methods[0].variables[0].type),
+    (FB + "/p:actions/p:action/p:body/p:ST/{http://www.w3.org/1999/xhtml}xhtml", "text", "x := 1;",
+     lambda p: _pou(p, "FB_Drive").actions[0].body_text),
+    (PROPERTY + "/p:SetAccessor/p:body/p:ST/{http://www.w3.org/1999/xhtml}xhtml", "text", "rSpeed := 0.0;",
+     lambda p: _pou(p, "FB_Drive").properties[0].setter.body_text),
+]
+
+
+@pytest.mark.parametrize(
+    "xpath,what,value,field", MEMBER_CASES,
+    ids=["method-return-type", "method-variable-type", "action-body", "setter-body"],
+)
+def test_sample05_members_lossless(xpath, what, value, field):
+    original = ET.parse(DRIVE_OOP).getroot()
+    changed = deepcopy(original)
+    target = changed.find(xpath, NS)
+    assert target is not None
+    setattr(target, what, value)
+    before, after = parse_element(original), parse_element(changed)
+    assert field(before) != field(after)
+    assert before != after
+
+
+def _vendor_fields(obj):
+    return {name: getattr(obj, name) for name in ("vendor_xml", "interface_vendor_xml") if hasattr(obj, name)}
+
+
+RESIDUAL_CASES = [
+    (FB + "/p:interface", "addData", lambda p: _pou(p, "FB_Drive"), "interface_vendor_xml"),
+    (FB + "/p:addData", "data", lambda p: _pou(p, "FB_Drive"), "vendor_xml"),
+    (FB, "Transitions", lambda p: _pou(p, "FB_Drive"), "vendor_xml"),
+    (METHOD + "/p:addData", "data", lambda p: _pou(p, "FB_Drive").methods[0], "vendor_xml"),
+    (METHOD + "/p:interface", "addData", lambda p: _pou(p, "FB_Drive").methods[0], "interface_vendor_xml"),
+    (METHOD, "Extra", lambda p: _pou(p, "FB_Drive").methods[0], "vendor_xml"),
+    (PROPERTY + "/p:SetAccessor", "Extra", lambda p: _pou(p, "FB_Drive").properties[0].setter, "vendor_xml"),
+    (PROPERTY + "/p:SetAccessor/p:interface", "addData",
+     lambda p: _pou(p, "FB_Drive").properties[0].setter, "interface_vendor_xml"),
+    (FB + "/p:actions/p:action", "Extra", lambda p: _pou(p, "FB_Drive").actions[0], "vendor_xml"),
+    (PROPERTY + "/p:addData", "data", lambda p: _pou(p, "FB_Drive").properties[0], "vendor_xml"),
+    (PROPERTY + "/p:interface/p:addData/p:data/p:AccessModifiers", "Modifier",
+     lambda p: _pou(p, "FB_Drive").properties[0], "interface_vendor_xml"),
+]
+
+
+def _insert(root, parent_xpath, kind, mode):
+    """Insert an unknown element at *parent_xpath*; ``kind`` is the shape of the extension."""
+    parent = root.find(parent_xpath, NS)
+    assert parent is not None, parent_xpath
+    if kind == "data":
+        ET.SubElement(parent, PREFIX + "data", name="urn:vendor", mode=mode)
+    elif kind == "addData":
+        holder = ET.SubElement(parent, PREFIX + "addData")
+        ET.SubElement(holder, PREFIX + "data", name="urn:vendor", mode=mode)
+    else:
+        ET.SubElement(parent, PREFIX + kind, mode=mode)
+
+
+@pytest.mark.parametrize(
+    "parent,kind,owner,field", RESIDUAL_CASES,
+    ids=[f"{parent.rpartition('/')[2]}+{kind}->{field}" for parent, kind, _, field in RESIDUAL_CASES],
+)
+def test_residual_xml_is_kept_at_its_location(parent, kind, owner, field):
+    """SYNTHETIC: each location's residual content lands in that owner's field, and only there."""
+    base = parse_element(ET.parse(DRIVE_OOP).getroot())
+    root = ET.parse(DRIVE_OOP).getroot()
+    _insert(root, parent, kind, "a")
+    first = parse_element(root)
+    root = ET.parse(DRIVE_OOP).getroot()
+    _insert(root, parent, kind, "b")
+    second = parse_element(root)
+    for name, value in _vendor_fields(owner(first)).items():
+        if name == field:
+            assert value != getattr(owner(base), name)
+            assert value != getattr(owner(second), name)
+            assert any('mode="a"' in entry for entry in value)
+        else:
+            assert value == getattr(owner(base), name), name
+    assert first != base and first != second
+
+
+def test_moving_an_extension_between_property_locations_changes_the_model():
+    at_interface = ET.parse(DRIVE_OOP).getroot()
+    _insert(at_interface, PROPERTY + "/p:interface/p:addData", "data", "a")
+    at_property = ET.parse(DRIVE_OOP).getroot()
+    _insert(at_property, PROPERTY + "/p:addData", "data", "a")
+    first, second = parse_element(at_interface), parse_element(at_property)
+    assert first != second
+    prop_first, prop_second = _pou(first, "FB_Drive").properties[0], _pou(second, "FB_Drive").properties[0]
+    assert prop_first.interface_vendor_xml != prop_second.interface_vendor_xml
+    assert prop_first.vendor_xml != prop_second.vendor_xml
+    assert prop_first.getter == prop_second.getter and prop_first.setter == prop_second.setter
+
+
+def test_residual_fragment_strips_nested_object_ids_only():
+    """SYNTHETIC: a GUID inside a preserved subtree is noise; everything else in it counts."""
+    root = ET.parse(DRIVE_OOP).getroot()
+    extra = ET.SubElement(root.find(METHOD, NS), PREFIX + "Extra", mode="a")
+    add_data = ET.SubElement(extra, PREFIX + "addData")
+    object_id = ET.SubElement(
+        ET.SubElement(add_data, PREFIX + "data", name="http://www.3s-software.com/plcopenxml/objectid"),
+        PREFIX + "ObjectId",
+    )
+    object_id.text = "11111111-1111-1111-1111-111111111111"
+    vendor = ET.SubElement(add_data, PREFIX + "data", name="urn:vendor", k="1")
+    before = parse_element(root)
+    fragment = _pou(before, "FB_Drive").methods[0].vendor_xml
+    assert len(fragment) == 1 and "urn:vendor" in fragment[0] and "ObjectId" not in fragment[0]
+
+    object_id.text = "22222222-2222-2222-2222-222222222222"
+    assert parse_element(root) == before
+    vendor.set("k", "2")
+    assert _pou(parse_element(root), "FB_Drive").methods[0].vendor_xml != fragment
+    vendor.set("k", "1")
+    extra.set("mode", "b")
+    assert _pou(parse_element(root), "FB_Drive").methods[0].vendor_xml != fragment
+
+
+def test_accessor_order_does_not_matter():
+    root = ET.parse(DRIVE_OOP).getroot()
+    before = parse_element(root)
+    prop = root.find(PROPERTY, NS)
+    setter = prop.find("p:SetAccessor", NS)
+    prop.remove(setter)
+    prop.insert(list(prop).index(prop.find("p:GetAccessor", NS)) + 1, setter)
+    assert parse_element(root) == before
+
+
+def test_member_object_ids_are_noise():
+    root = ET.parse(DRIVE_OOP).getroot()
+    before = parse_element(root)
+    assert parse_element(relabel_object_ids(root)) == before

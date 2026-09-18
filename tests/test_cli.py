@@ -149,6 +149,17 @@ def test_sample05_json(capsys):
     data = json.loads(captured.out)
     assert data["data_types"][0]["values"][1] == {"name": "RUNNING", "value": "10"}
     assert data["data_types"][1]["members"][0]["section"] == "struct"
+    assert data["pous"][1]["methods"][0]["variables"][1]["scope"] == "FB_Drive.M_Start"
+    assert data["pous"][1]["properties"][0]["getter"]["body_text"] == " P_Speed := rSpeed;"
+
+    assert main(["parse", str(DRIVE_OOP)]) == 0
+    out = capsys.readouterr().out
+    assert "## Variables (10)" in out
+    rows = [[cell.strip() for cell in line.split("|")[1:-1]] for line in out.splitlines() if line.startswith("| FB_Drive.M_Start")]
+    assert rows == [
+        ["FB_Drive.M_Start", "input", "rTarget", "REAL", "", "", ""],
+        ["FB_Drive.M_Start", "local", "xOk", "BOOL", "", "", ""],
+    ]
 
 
 def test_sample04_table_shows_placeholders_not_xml(capsys):
