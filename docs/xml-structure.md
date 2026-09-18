@@ -340,6 +340,28 @@ Under the project-level `addData`:
   `rActual := fbDrive.P_Speed;` is a property read (calls Get).
 - `E_DriveState.RUNNING` is an enum literal, not a variable.
 
+### How M3a reads it (implemented, Decisions 011/012)
+- Scope paths: `FB_Drive.M_Start` (method), `FB_Drive.A_Reset` (action),
+  `FB_Drive.P_Speed.Get` / `.Set` (accessors) are the `Variable.scope` of
+  member variables and the `unit` of cross-reference locations.
+- `plcdoc.xref.cross_reference` yields exactly 29 references for this sample
+  (12 in `PLC_PRG`, 3 in the FB body, 2 in `A_Reset`, 8 in `M_Start`, 2 per
+  accessor), nothing unresolved, no warnings; the full list is the oracle in
+  `tests/test_xref.py`.
+- `AccessModifiers` is kept as canonical XML in `Property.interface_vendor_xml`;
+  the enum base type stays `None`; ObjectIds are used only to label
+  `Project.structure` and are not stored.
+- Nothing new about the XML shape turned up during implementation; the
+  findings above were sufficient.
+
+### Ladder bodies in the cross-reference
+Sample 03's `PRG_Alarm` yields two references located by `localId`: contact
+`3` reads `GVL_IO.bDoorClosed`, coil `4` writes `GVL_IO.bHorn`. Blocks
+(`block[@instanceName]` with `inputVariables` / `outputVariables` /
+`inOutVariables` pins) and `inVariable` / `outVariable` boxes have no real
+export yet; their handling (one reference per pin, connections never add
+references) is covered by synthetic tests only.
+
 ## Useful extras
 - `task`: task name, cycle (`interval="PT0.02S"`), priority, and which program it calls → program tree.
 - `ProjectStructure`: object hierarchy with names → program tree (details and caveats in sample 05 findings).
