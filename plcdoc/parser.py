@@ -117,109 +117,117 @@ def parse_element(root: Element) -> Project:
         name=_attr(root.find(_q(ns, "contentHeader")), "name", ""),
         product_version=_attr(root.find(_q(ns, "fileHeader")), "productVersion", ""),
     )
-    _collect_pous(root, ns, project)
-    _collect_gvls(root, ns, project)
-    _collect_tasks(root, ns, project)
+    _collect(root, ns, project)
     return project
 
 
 # --------------------------------------------------------------------------- #
-# Discovery: the three locations
+# Discovery: one ownership walk over the whole document
 # --------------------------------------------------------------------------- #
 
 
-def _collect_pous(root: Element, ns: str, project: Project) -> None:
-    seen: dict[tuple[str | None, str | None, str], list[Pou]] = {}
-    for elem, configuration, application in _iter_pou_elements(root, ns):
-        pou = _parse_pou(elem, ns, project.warnings, configuration, application)
-        key = (configuration, application, pou.name)
-        previous = seen.setdefault(key, [])
-        if previous:
-            identical = pou in previous
-            action = "identical definition ignored" if identical else "conflicting definition retained"
-            project.warnings.append(
-                f"duplicate POU {pou.name!r} in {configuration!r}/{application!r}: {action}"
-            )
-            if identical:
-                continue
-        previous.append(pou)
-        project.pous.append(pou)
+def _collect(root: Element, ns: str, project: Project) -> None:
+    """Find every POU, GVL and task together with its owner in one walk.
+
+    Standard locations (``types/pous``, project scope) come first. Then a
+    single document-order walk carries the enclosing configuration/resource
+    names: CODESYS ``data[@name=".../pou"]`` elements contribute POUs, and
+    ``configuration`` / ``resource`` elements contribute their *direct*
+    ``globalVars`` and ``task`` children (a ``globalVars`` inside a POU
+    interface belongs to that POU, never to the project).
+    """
+    unique_pous = _UniqueByOwner("POU", project.warnings)
+    standard_pous = "/".join([".", _q(ns, "types"), _q(ns, "pous"), _q(ns, "pou")])
+    for elem in root.findall(standard_pous):
+        unique_pous.add(project.pous, _parse_pou(elem, ns, project.warnings, None, None))
+    for elem, configuration, application in _walk(root, ns):
+        if elem.tag == _q(ns, "data"):
+            if elem.get("name") == CODESYS_POU_DATA:
+                for pou_elem in elem.findall(_q(ns, "pou")):
+                    unique_pous.add(
+                        project.pous,
+                        _parse_pou(pou_elem, ns, project.warnings, configuration, application),
+                    )
+        elif elem.tag in (_q(ns, "configuration"), _q(ns, "resource")):
+            for gvl_elem in elem.findall(_q(ns, "globalVars")):
+                project.gvls.append(
+                    _parse_gvl(gvl_elem, ns, project.warnings, configuration, application)
+                )
+            for task_elem in elem.findall(_q(ns, "task")):
+                project.tasks.append(_parse_task(task_elem, ns, configuration, application))
 
 
-def _iter_owned_elements(
+def _walk(
     elem: Element, ns: str, configuration: str | None = None, application: str | None = None,
 ) -> Iterator[tuple[Element, str | None, str | None]]:
-    """Keep the enclosing device/application while walking vendor extensions."""
+    """Every element in document order with its enclosing configuration/resource names.
+
+    Ownership changes at ``configuration`` (resets the application) and at
+    ``resource``. The same walk serves POUs, GVLs and tasks, so all of them
+    agree on who owns what, wherever CODESYS nests the element.
+    """
     if elem.tag == _q(ns, "configuration"):
         configuration, application = elem.get("name", ""), None
     elif elem.tag == _q(ns, "resource"):
         application = elem.get("name", "")
     yield elem, configuration, application
     for child in elem:
-        yield from _iter_owned_elements(child, ns, configuration, application)
+        yield from _walk(child, ns, configuration, application)
 
 
-def _iter_pou_elements(
-    root: Element, ns: str,
-) -> Iterator[tuple[Element, str | None, str | None]]:
-    # Location 1: standard PLCopen.
-    standard_path = "/".join([".", _q(ns, "types"), _q(ns, "pous"), _q(ns, "pou")])
-    for elem in root.findall(standard_path):
-        yield elem, None, None
-    # Location 2: CODESYS vendor extension. The <data> element sits in the
-    # addData of a resource in the samples; look at every <data> element with
-    # the CODESYS pou name so a configuration-level placement is found as well.
-    for data, configuration, application in _iter_owned_elements(root, ns):
-        if data.tag != _q(ns, "data") or data.get("name") != CODESYS_POU_DATA:
-            continue
-        for elem in data.findall(_q(ns, "pou")):
-            yield elem, configuration, application
+class _UniqueByOwner:
+    """Collapse identical definitions within one owner; keep conflicting ones with a warning."""
 
+    def __init__(self, label: str, warnings: list[str]) -> None:
+        self._label = label
+        self._warnings = warnings
+        self._seen: dict[tuple[str | None, str | None, str], list] = {}
 
-def _iter_holders(
-    root: Element, ns: str,
-) -> Iterator[tuple[Element, str, str | None]]:
-    path = "/".join(_q(ns, tag) for tag in ("instances", "configurations", "configuration"))
-    for configuration in root.findall(path):
-        name = configuration.get("name", "")
-        yield configuration, name, None
-        for resource in configuration.findall(_q(ns, "resource")):
-            yield resource, name, resource.get("name", "")
-
-
-def _collect_gvls(root: Element, ns: str, project: Project) -> None:
-    # Location 3: only configuration- and resource-level globalVars are GVLs.
-    # A globalVars section inside a POU interface belongs to that POU instead.
-    for holder, configuration, application in _iter_holders(root, ns):
-        for elem in holder.findall(_q(ns, "globalVars")):
-            name = elem.get("name", "")
-            gvl = GlobalVarList(name=name, configuration=configuration, application=application)
-            gvl.variables = _parse_variables(
-                elem, ns, "global", name, project.warnings, configuration, application,
+    def add(self, target: list, obj) -> None:
+        key = (obj.configuration, obj.application, obj.name)
+        previous = self._seen.setdefault(key, [])
+        if previous:
+            identical = obj in previous
+            action = "identical definition ignored" if identical else "conflicting definition retained"
+            self._warnings.append(
+                f"duplicate {self._label} {obj.name!r} in "
+                f"{obj.configuration!r}/{obj.application!r}: {action}"
             )
-            project.gvls.append(gvl)
+            if identical:
+                return
+        previous.append(obj)
+        target.append(obj)
 
 
-def _collect_tasks(root: Element, ns: str, project: Project) -> None:
-    for holder, configuration, application in _iter_holders(root, ns):
-        for elem in holder.findall(_q(ns, "task")):
-            priority_text = elem.get("priority")
-            task = Task(
-                name=elem.get("name", ""),
-                configuration=configuration,
-                application=application,
-                interval=elem.get("interval"),
-                priority=int(priority_text) if priority_text and priority_text.isdigit() else None,
-                programs=[
-                    PouInstance(
-                        instance_name=inst.get("name", ""),
-                        type_name=inst.get("typeName") or inst.get("name", ""),
-                    )
-                    for inst in elem.findall(_q(ns, "pouInstance"))
-                ],
-                settings=_task_settings(elem, ns),
+def _parse_gvl(
+    elem: Element, ns: str, warnings: list[str],
+    configuration: str | None, application: str | None,
+) -> GlobalVarList:
+    name = elem.get("name", "")
+    gvl = GlobalVarList(name=name, configuration=configuration, application=application)
+    gvl.variables = _parse_variables(elem, ns, "global", name, warnings, configuration, application)
+    return gvl
+
+
+def _parse_task(
+    elem: Element, ns: str, configuration: str | None, application: str | None,
+) -> Task:
+    priority_text = elem.get("priority")
+    return Task(
+        name=elem.get("name", ""),
+        configuration=configuration,
+        application=application,
+        interval=elem.get("interval"),
+        priority=int(priority_text) if priority_text and priority_text.isdigit() else None,
+        programs=[
+            PouInstance(
+                instance_name=inst.get("name", ""),
+                type_name=inst.get("typeName") or inst.get("name", ""),
             )
-            project.tasks.append(task)
+            for inst in elem.findall(_q(ns, "pouInstance"))
+        ],
+        settings=_task_settings(elem, ns),
+    )
 
 
 def _task_settings(task: Element, ns: str) -> dict[str, str]:
