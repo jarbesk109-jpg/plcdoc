@@ -287,6 +287,7 @@ def test_var_external_is_an_alias():
         (P, "bHorn", "write", global_horn, external_horn),
         (P, "GVL_IO.bHorn", "write", global_horn, None),
         ("FB_Motor", "PLC_PRG.bHorn", "write", global_horn, external_horn),
+        ("PRG_Alarm", "bHorn", "write", global_horn, None),  # the ladder coil of sample 03
     ]
     declared = {(v.name, v.section) for v in project.pous[0].variables}
     assert ("bHorn", "external") in declared
@@ -460,3 +461,116 @@ def test_member_walk_uses_type_structure(declarations, body, expected):
     x = cross_reference(project)
     assert [_short(r) for r in x.references if r.location.unit == P] == expected
     assert x.unresolved == []
+
+
+# --------------------------------------------------------------------------- #
+# LD bodies
+# --------------------------------------------------------------------------- #
+
+
+def _ld_row(r):
+    return (r.location.unit, r.location.local_id, r.text, r.access, _t(r.target), r.member, _t(r.member_target))
+
+
+def test_sample03_ladder_references(large):
+    x = cross_reference(large)
+    ladder = [r for r in x.references if r.location.unit == "PRG_Alarm"]
+    assert [_ld_row(r) for r in ladder] == [
+        ("PRG_Alarm", "3", "bDoorClosed", "read", "v:GVL_IO.bDoorClosed", "", None),
+        ("PRG_Alarm", "4", "bHorn", "write", "v:GVL_IO.bHorn", "", None),
+    ]
+    assert all(r.location.line is None and r.location.column is None for r in ladder)
+
+
+def _pin(group, name, ref=None):
+    connection = (
+        f'<connectionPointIn><connection refLocalId="{ref[0]}" formalParameter="{ref[1]}"/></connectionPointIn>'
+        if ref else "<connectionPointOut/>"
+    )
+    return f'<{group}><variable formalParameter="{name}">{connection}</variable></{group}>'
+
+
+def _block_xml(local_id, instance, *pins):
+    return f'<block localId="{local_id}" typeName="FB_Motor" instanceName="{instance}">{"".join(pins)}</block>'
+
+
+def _ld_project(root, *elements):
+    """SYNTHETIC: replace PLC_PRG's body in *root* with an LD network made of *elements*."""
+    body = root.find(f".//p:pou[@name='{P}']/p:body", NS)
+    body.clear()
+    body.append(ET.fromstring(f'<LD xmlns="{NS["p"]}">{"".join(elements)}</LD>'))
+    return parse_element(root)
+
+
+def test_ld_block_and_pins():
+    project = _ld_project(
+        ET.parse(LARGE).getroot(),
+        '<inVariable localId="1"><expression>bStart1 AND NOT bStop1</expression><connectionPointOut/></inVariable>',
+        _block_xml(2, "fbConv1", _pin("inputVariables", "bStart", ("1", "")), _pin("outputVariables", "bRun")),
+        '<outVariable localId="3"><connectionPointIn><connection refLocalId="2" formalParameter="bRun"/>'
+        '</connectionPointIn><expression>bMotor1</expression></outVariable>',
+    )
+    x = cross_reference(project)
+    assert [_ld_row(r) for r in x.references if r.location.unit == P] == [
+        (P, "1", "bStart1", "read", "v:GVL_IO.bStart1", "", None),
+        (P, "1", "bStop1", "read", "v:GVL_IO.bStop1", "", None),
+        (P, "2", "fbConv1", "call", "v:PLC_PRG.fbConv1", "", None),
+        (P, "2", "bStart", "write", "v:PLC_PRG.fbConv1", "bStart", "v:FB_Motor.bStart"),
+        (P, "2", "bRun", "read", "v:PLC_PRG.fbConv1", "bRun", "v:FB_Motor.bRun"),
+        (P, "3", "bMotor1", "write", "v:GVL_IO.bMotor1", "", None),
+    ]
+    assert [u for u in x.unresolved if u.location.unit == P] == []
+
+
+def test_ld_block_to_block_wiring():
+    project = _ld_project(
+        _in_out_project(),
+        _block_xml(1, "fbConv1", _pin("outputVariables", "bRun"), _pin("inOutVariables", "io", ("2", "io"))),
+        _block_xml(2, "fbConv2", _pin("inputVariables", "bInterlock", ("1", "bRun")), _pin("inOutVariables", "io", ("1", "io"))),
+    )
+    x = cross_reference(project)
+    assert [_ld_row(r) for r in x.references if r.location.unit == P] == [
+        (P, "1", "fbConv1", "call", "v:PLC_PRG.fbConv1", "", None),
+        (P, "1", "bRun", "read", "v:PLC_PRG.fbConv1", "bRun", "v:FB_Motor.bRun"),
+        (P, "1", "io", "readwrite", "v:PLC_PRG.fbConv1", "io", "v:FB_Motor.io"),
+        (P, "2", "fbConv2", "call", "v:PLC_PRG.fbConv2", "", None),
+        (P, "2", "bInterlock", "write", "v:PLC_PRG.fbConv2", "bInterlock", "v:FB_Motor.bInterlock"),
+        (P, "2", "io", "readwrite", "v:PLC_PRG.fbConv2", "io", "v:FB_Motor.io"),
+    ]
+    assert [u for u in x.unresolved if u.location.unit == P] == []
+
+
+def test_ld_fan_out_keeps_one_reference_per_pin():
+    project = _ld_project(
+        ET.parse(LARGE).getroot(),
+        _block_xml(1, "fbConv1", _pin("outputVariables", "bRun")),
+        _block_xml(2, "fbConv2", _pin("inputVariables", "bInterlock", ("1", "bRun"))),
+        _block_xml(3, "fbConv3", _pin("inputVariables", "bInterlock", ("1", "bRun"))),
+        '<outVariable localId="4"><connectionPointIn><connection refLocalId="1" formalParameter="bRun"/>'
+        '</connectionPointIn><expression>bMotor1</expression></outVariable>',
+    )
+    x = cross_reference(project)
+    rows = [_ld_row(r) for r in x.references if r.location.unit == P]
+    assert len(rows) == 7
+    assert rows.count((P, "1", "bRun", "read", "v:PLC_PRG.fbConv1", "bRun", "v:FB_Motor.bRun")) == 1
+    assert [r for r in rows if r[3] == "call"] == [
+        (P, "1", "fbConv1", "call", "v:PLC_PRG.fbConv1", "", None),
+        (P, "2", "fbConv2", "call", "v:PLC_PRG.fbConv2", "", None),
+        (P, "3", "fbConv3", "call", "v:PLC_PRG.fbConv3", "", None),
+    ]
+    assert [r for r in rows if r[2] == "bInterlock"] == [
+        (P, "2", "bInterlock", "write", "v:PLC_PRG.fbConv2", "bInterlock", "v:FB_Motor.bInterlock"),
+        (P, "3", "bInterlock", "write", "v:PLC_PRG.fbConv3", "bInterlock", "v:FB_Motor.bInterlock"),
+    ]
+    assert rows[-1] == (P, "4", "bMotor1", "write", "v:GVL_IO.bMotor1", "", None)
+
+
+def test_ld_storage_and_negation_do_not_change_access():
+    root = ET.parse(LARGE).getroot()
+    root.find(".//p:LD/p:coil", NS).set("storage", "set")
+    contact = root.find(".//p:LD/p:contact", NS)
+    assert contact.get("negated") == "true"
+    x = cross_reference(parse_element(root))
+    assert [(r.text, r.access) for r in x.references if r.location.unit == "PRG_Alarm"] == [
+        ("bDoorClosed", "read"), ("bHorn", "write"),
+    ]

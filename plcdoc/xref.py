@@ -86,6 +86,8 @@ def cross_reference(project: Project) -> CrossReference:
     for unit in _units(project):
         if unit.body_language == "ST" and unit.body_text:
             scanner.scan_st(unit)
+        elif unit.graphical_body:
+            scanner.scan_graphical(unit)
     scanner.result.warnings = list(scanner.index.warnings)
     return scanner.result
 
@@ -400,6 +402,18 @@ _DIRECTION = {  # section -> (formal access, actual access)
     "output": ("read", "write"),
     "inout": ("readwrite", "readwrite"),
 }
+# LD/FBD: a block pin's access follows its group; a free-standing variable box its element kind.
+_PIN_ACCESS_BY_GROUP = {"inputVariables": "write", "outputVariables": "read", "inOutVariables": "readwrite"}
+_PIN_ACCESS_BY_ELEMENT = {"inVariable": "read", "outVariable": "write", "inOutVariable": "readwrite"}
+
+
+def _expression_text(xml: str) -> str | None:
+    """The ``expression`` text of an inVariable/outVariable/inOutVariable element."""
+    element = ET.fromstring(xml)
+    for child in element:
+        if isinstance(child.tag, str) and _split_tag(child.tag)[1] == "expression":
+            return "".join(child.itertext())
+    return None
 
 
 def _direction(formal: Variable | None, operator: str) -> tuple[str, str]:
@@ -415,21 +429,103 @@ class _Scanner:
     def __init__(self, index: _Index) -> None:
         self.index = index
         self.result = CrossReference()
+        self._fixed_location: Location | None = None  # set while scanning a graphical element
 
     # -- ST ----------------------------------------------------------------- #
 
     def scan_st(self, unit: _Unit) -> None:
         self._unit = unit
         self._text = unit.body_text or ""
+        self._fixed_location = None
         tokens = _tokenize(self._text)
         self._scan(tokens, 0, len(tokens), [])
 
     def _location(self, offset: int) -> Location:
+        if self._fixed_location is not None:
+            return self._fixed_location
         line_start = self._text.rfind("\n", 0, offset) + 1
         return Location(
             self._unit.configuration, self._unit.application, self._unit.path,
             line=self._text.count("\n", 0, offset) + 1, column=offset - line_start + 1,
         )
+
+    # -- LD / graphical ------------------------------------------------------ #
+
+    def scan_graphical(self, unit: _Unit) -> None:
+        """Contacts read, coils write, in/out variables read/write, blocks call plus one reference per pin."""
+        self._unit = unit
+        self._text = ""
+        for element in unit.graphical_body:
+            self._fixed_location = Location(
+                unit.configuration, unit.application, unit.path, local_id=element.local_id,
+            )
+            if element.kind == "contact":
+                self._graphical_expression(element.variable, "read")
+            elif element.kind == "coil":
+                self._graphical_expression(element.variable, "write")
+            elif element.kind in _PIN_ACCESS_BY_ELEMENT:
+                self._graphical_expression(
+                    _expression_text(element.xml), _PIN_ACCESS_BY_ELEMENT[element.kind],
+                )
+            elif element.kind == "block":
+                self._block(element.xml)
+        self._fixed_location = None
+
+    def _graphical_expression(self, text: str | None, access: str) -> None:
+        """A bare path gets *access*; any other expression is scanned as reads."""
+        if not text or not text.strip():
+            return
+        tokens = _tokenize(text)
+        if not tokens:
+            return
+        if tokens[0].kind in ("ident", "self"):
+            path = self._path(tokens, 0, len(tokens))
+            if path.end == len(tokens):
+                self._emit(path, access)
+                self._scan_indexes(tokens, path)
+                return
+        self._scan(tokens, 0, len(tokens), [])
+
+    def _block(self, xml: str) -> None:
+        block = ET.fromstring(xml)
+        callee_text = block.get("instanceName") or block.get("typeName") or ""
+        callee: _Callee | None = None
+        tokens = _tokenize(callee_text)
+        if tokens and tokens[0].kind in ("ident", "self"):
+            path = self._path(tokens, 0, len(tokens))
+            if path.end == len(tokens):
+                callee = self._emit(path, "call")
+        if callee is None:
+            return  # nothing to attach pins to (no name, or an enum literal)
+        # Exactly one reference per pin; a pin listed under several groups merges to readwrite.
+        pins: dict[str, str] = {}
+        for group in block:
+            if not isinstance(group.tag, str):
+                continue
+            direction = _PIN_ACCESS_BY_GROUP.get(_split_tag(group.tag)[1])
+            if direction is None:
+                continue
+            for pin in group:
+                if not isinstance(pin.tag, str) or _split_tag(pin.tag)[1] != "variable":
+                    continue
+                name = pin.get("formalParameter", "")
+                if not name:
+                    continue
+                previous = pins.get(name)
+                pins[name] = direction if previous in (None, direction) else "readwrite"
+        for name, access in pins.items():
+            location = self._location(0)
+            if callee.target is None:
+                self.result.unresolved.append(Unresolved(name, access, location, "undeclared callee"))
+                continue
+            formal = None
+            if callee.formals is not None:
+                formal = next((v for v in callee.formals if v.name.lower() == name.lower()), None)
+            member = f"{callee.member}.{name}" if callee.member else name
+            self.result.references.append(Reference(
+                callee.target, member, _variable_target(formal) if formal is not None else None,
+                access, location, name, callee.via,
+            ))
 
     def _scan(self, tokens: list[_Token], start: int, end: int, stack: list[_Frame]) -> None:
         i = start
