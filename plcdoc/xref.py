@@ -318,14 +318,25 @@ PERSISTENT
 _SELF = frozenset({"THIS", "SUPER"})
 _ASSIGN = frozenset({":=", "S=", "R=", "REF="})
 
+_UNSIGNED_REAL = r"[0-9][0-9_]*(?:\.[0-9][0-9_]*)?"
+_DECIMAL = rf"{_UNSIGNED_REAL}(?:[eE][+-]?[0-9]+)?"
+_BASED_NUMBER = r"(?:16\#[0-9A-Fa-f_]+|8\#[0-7_]+|2\#[01_]+)"
+_DATE_LITERAL = r"[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}"
+_CLOCK_LITERAL = r"[0-9]{1,2}:[0-9]{1,2}:[0-9]{1,2}(?:\.[0-9]+)?"
+_STRING_LITERAL = r"'(?:\$.|[^'$])*'|\"(?:\$.|[^\"$])*\""
+
 _TOKEN_RE = re.compile(
-    r"""
-    (?P<skip>\s+|//[^\n]*|\(\*.*?\*\)|/\*.*?\*/|\{[^}]*\}
-        |'(?:\$.|[^'$])*'|"(?:\$.|[^"$])*")
+    rf"""
+    (?P<skip>\s+|//[^\n]*|\(\*.*?\*\)|/\*.*?\*/|\{{[^}}]*\}}
+        |{_STRING_LITERAL})
   | (?P<literal>%[A-Za-z]+[0-9.]*
-        |[A-Za-z_][A-Za-z0-9_]*\#[A-Za-z0-9_.:+\-]*
-        |[0-9][0-9_]*\#[0-9A-Fa-f_]+
-        |[0-9][0-9_]*(?:\.[0-9][0-9_]*)?(?:[eE][+-]?[0-9]+)?)
+        |(?i:(?:L?DATE_AND_TIME|L?DT)\#{_DATE_LITERAL}-{_CLOCK_LITERAL}
+            |(?:L?DATE|L?D)\#{_DATE_LITERAL}
+            |(?:L?TIME_OF_DAY|L?TOD)\#{_CLOCK_LITERAL}
+            |(?:L?TIME|L?T)\#[+-]?(?:{_UNSIGNED_REAL}(?:ms|us|ns|d|h|m|s)_?)+)
+        |[A-Za-z_][A-Za-z0-9_]*\#(?:[+-]?(?:{_BASED_NUMBER}|{_DECIMAL})
+            |{_STRING_LITERAL}|[A-Za-z_][A-Za-z0-9_]*)
+        |{_BASED_NUMBER}|{_DECIMAL})
   | (?P<assign>(?i:REF=|S=|R=)|:=)
   | (?P<ident>[A-Za-z_][A-Za-z0-9_]*)
   | (?P<op>=>|<=|>=|<>|\*\*|[-+*/<>=^.(),;:\[\]])

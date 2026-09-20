@@ -224,6 +224,28 @@ def test_st_edge_cases(sample, unit, declarations, body, expected, unresolved):
     assert [(u.text, u.access, u.reason) for u in x.unresolved if u.location.unit == unit] == unresolved
 
 
+@pytest.mark.parametrize("literal", [
+    "INT#5", "REAL#1.5e+3", "REAL#-1.5e-3", "WORD#16#FF", "BOOL#TRUE",
+    "T#5s", "TIME#1h_2m_3.5s", "LTIME#-5ms", "D#2026-09-20", "DT#2026-09-20-12:34:56",
+    "TOD#12:34:56.5",
+])
+@pytest.mark.parametrize("operator", ["+", "-"])
+def test_typed_literals_stop_before_adjacent_operators(literal, operator):
+    """SYNTHETIC: literal-internal signs must not consume the following variable occurrence."""
+    root = ET.parse(LARGE).getroot()
+    _with_locals(root, P, {"iVal": INT})
+    prefix = "iVal := "
+    _set_body(root, P, f"{prefix}{literal}{operator}iVal;")
+    x = cross_reference(parse_element(root))
+    rows = [r for r in x.references if r.location.unit == P]
+    assert [(r.text, r.access, r.location.line, r.location.column) for r in rows] == [
+        ("iVal", "write", 1, 1),
+        ("iVal", "read", 1, len(prefix) + len(literal) + 2),
+    ]
+    assert all(r.target == Target("variable", "Device", "Application", P, "iVal") for r in rows)
+    assert [u for u in x.unresolved if u.location.unit == P] == []
+
+
 ONE_LINE = (
     "IF a THEN b := 1; ELSIF c THEN d := 2; ELSE e := 3; END_IF "
     "WHILE f DO g := 4; END_WHILE REPEAT h := 5; UNTIL k END_REPEAT "
