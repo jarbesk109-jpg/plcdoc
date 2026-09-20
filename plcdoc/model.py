@@ -164,8 +164,8 @@ class Accessor:
     body_text: str | None = None
     graphical_body: list[GraphicalElement] = field(default_factory=list)
     body_xml: str | None = None
-    interface_vendor_xml: list[str] = field(default_factory=list)  # accessor/interface/addData
-    vendor_xml: list[str] = field(default_factory=list)  # accessor/addData not modelled + unexpected children
+    interface_vendor_xml: list[str] = field(default_factory=list)  # unmodelled accessor/interface content
+    vendor_xml: list[str] = field(default_factory=list)  # unmodelled accessor content, including documentation
 
 
 @dataclass
@@ -178,7 +178,7 @@ class Property:
     getter: Accessor | None = None
     setter: Accessor | None = None  # named fields: the XML order of the accessors is irrelevant
     comment: str = ""
-    interface_vendor_xml: list[str] = field(default_factory=list)  # Property/interface/addData (AccessModifiers)
+    interface_vendor_xml: list[str] = field(default_factory=list)  # unmodelled Property/interface content
     vendor_xml: list[str] = field(default_factory=list)  # Property/addData not modelled + unexpected children
 
 

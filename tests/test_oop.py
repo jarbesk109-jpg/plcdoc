@@ -402,6 +402,132 @@ def test_interface_residuals_once_in_source_order(xpath, owner):
     assert comparable == before
 
 
+@pytest.mark.parametrize("kind", ["Get", "Set"])
+@pytest.mark.parametrize("content", ["documentation", "interface-documentation", "return-type"])
+def test_accessor_unmodelled_content_is_preserved(kind, content):
+    """SYNTHETIC: accessor documentation and return types survive at their original locations."""
+    root = ET.parse(DRIVE_OOP).getroot()
+    accessor = root.find(PROPERTY + f"/p:{kind}Accessor", NS)
+    interface = accessor.find("p:interface", NS)
+    return_type = ET.SubElement(interface, PREFIX + "returnType")
+    ET.SubElement(return_type, PREFIX + "REAL")
+    xhtml = "{http://www.w3.org/1999/xhtml}xhtml"
+    wrapper_doc = ET.SubElement(ET.SubElement(accessor, PREFIX + "documentation"), xhtml)
+    wrapper_doc.text = "  wrapper note\n"
+    interface_doc = ET.SubElement(ET.SubElement(interface, PREFIX + "documentation"), xhtml)
+    interface_doc.text = "  interface note\n"
+    _declare(interface, "xAccessorLocal")
+
+    def owner(project):
+        prop = _pou(project, "FB_Drive").properties[0]
+        return prop.getter if kind == "Get" else prop.setter
+
+    before = parse_element(root)
+    if content == "return-type":
+        return_type[0].tag = PREFIX + "INT"
+    elif content == "documentation":
+        wrapper_doc.text = "changed wrapper note"
+    else:
+        interface_doc.text = "changed interface note"
+    after = parse_element(root)
+    assert before != after
+    assert before.warnings == after.warnings == []
+
+    wrapper_fragments = [ET.fromstring(xml) for xml in owner(before).vendor_xml]
+    interface_fragments = [ET.fromstring(xml) for xml in owner(before).interface_vendor_xml]
+    assert [elem.tag for elem in wrapper_fragments] == [PREFIX + "documentation"]
+    assert "".join(wrapper_fragments[0].itertext()) == "  wrapper note\n"
+    assert [elem.tag for elem in interface_fragments] == [PREFIX + "returnType", PREFIX + "documentation"]
+    assert interface_fragments[0][0].tag == PREFIX + "REAL"
+    assert "".join(interface_fragments[1].itertext()) == "  interface note\n"
+    assert [(v.name, v.scope) for v in owner(before).variables] == [
+        ("xAccessorLocal", f"FB_Drive.P_Speed.{kind}"),
+    ]
+    field = "vendor_xml" if content == "documentation" else "interface_vendor_xml"
+    assert getattr(owner(before), field) != getattr(owner(after), field)
+    comparable = deepcopy(after)
+    setattr(owner(comparable), field, getattr(owner(before), field))
+    assert comparable == before  # only the correct owning field changes
+
+
+@pytest.mark.parametrize("kind", ["Get", "Set"])
+def test_moving_accessor_documentation_changes_its_location(kind):
+    """SYNTHETIC: identical documentation on an accessor and its interface is not equivalent."""
+    root = ET.parse(DRIVE_OOP).getroot()
+    accessor = root.find(PROPERTY + f"/p:{kind}Accessor", NS)
+    doc = ET.SubElement(accessor, PREFIX + "documentation")
+    ET.SubElement(doc, "{http://www.w3.org/1999/xhtml}xhtml").text = "same text"
+    before = parse_element(root)
+    accessor.remove(doc)
+    accessor.find("p:interface", NS).append(doc)
+    after = parse_element(root)
+    assert before != after
+    field = "getter" if kind == "Get" else "setter"
+    first = getattr(_pou(before, "FB_Drive").properties[0], field)
+    second = getattr(_pou(after, "FB_Drive").properties[0], field)
+    assert len(first.vendor_xml) == 1 and first.interface_vendor_xml == []
+    assert second.vendor_xml == [] and second.interface_vendor_xml == first.vendor_xml
+    assert before.warnings == after.warnings == []
+
+
+@pytest.mark.parametrize("change", ["name", "type", "initial-value", "qualifier", "vendor-data"])
+def test_property_variable_sections_are_preserved_as_xml(change):
+    """SYNTHETIC: whole property variable sections are residuals, not discarded declarations."""
+    root = ET.parse(DRIVE_OOP).getroot()
+    base = parse_element(root)
+    interface = root.find(PROPERTY + "/p:interface", NS)
+    variable = _declare(interface, "rPropertyLocal", "REAL", address="%IW9")
+    section = interface.find("p:localVars", NS)
+    section.set("retain", "true")
+    interface.remove(section)
+    interface.insert(1, section)  # between returnType and the existing AccessModifiers addData
+    initial = ET.SubElement(ET.SubElement(variable, PREFIX + "initialValue"), PREFIX + "simpleValue", value="1.0")
+    add_data = ET.SubElement(section, PREFIX + "addData")
+    noise = ET.SubElement(add_data, PREFIX + "data", name="http://www.3s-software.com/plcopenxml/objectid")
+    object_id = ET.SubElement(noise, PREFIX + "ObjectId")
+    object_id.text = "original-guid"
+    vendor = ET.SubElement(add_data, PREFIX + "data", name="urn:variable-section", mode="a")
+    _declare(interface, "xPropertyInput", section="inputVars")
+    before = parse_element(root)
+    object_id.text = "replacement-guid"
+    assert parse_element(root) == before  # nested ObjectIds remain noise in the new residual path
+
+    if change == "name":
+        variable.set("name", "renamedLocal")
+    elif change == "type":
+        variable.find("p:type/p:REAL", NS).tag = PREFIX + "LREAL"
+    elif change == "initial-value":
+        initial.set("value", "2.0")
+    elif change == "qualifier":
+        section.set("retain", "false")
+    else:
+        vendor.set("mode", "b")
+    after = parse_element(root)
+    assert before != after
+    assert before.warnings == after.warnings == [
+        "FB_Drive.P_Speed: unmodelled variable section <localVars> preserved as XML",
+        "FB_Drive.P_Speed: unmodelled variable section <inputVars> preserved as XML",
+    ]
+    first = _pou(before, "FB_Drive").properties[0]
+    second = _pou(after, "FB_Drive").properties[0]
+    fragments = [ET.fromstring(xml) for xml in first.interface_vendor_xml]
+    assert [elem.tag for elem in fragments] == [PREFIX + "localVars", PREFIX + "data", PREFIX + "inputVars"]
+    assert first.interface_vendor_xml[1] == _pou(base, "FB_Drive").properties[0].interface_vendor_xml[0]
+    assert fragments[0].get("retain") == "true"
+    retained = fragments[0].find("p:variable", NS)
+    assert retained.attrib == {"name": "rPropertyLocal", "address": "%IW9"}
+    assert retained.find("p:type/p:REAL", NS) is not None
+    assert retained.find("p:initialValue/p:simpleValue", NS).get("value") == "1.0"
+    assert fragments[0].find("p:addData/p:data", NS).attrib == {"name": "urn:variable-section", "mode": "a"}
+    assert all(elem.find(".//p:ObjectId", NS) is None for elem in fragments)
+    assert fragments[2].find("p:variable", NS).get("name") == "xPropertyInput"
+    assert first.interface_vendor_xml != second.interface_vendor_xml
+    assert list(before.all_variables()) == list(after.all_variables()) == list(base.all_variables())
+    comparable = deepcopy(after)
+    _pou(comparable, "FB_Drive").properties[0].interface_vendor_xml = first.interface_vendor_xml
+    assert comparable == before  # no other field changes, including warnings
+
+
 RESIDUAL_CASES = [
     (FB + "/p:interface", "addData", lambda p: _pou(p, "FB_Drive"), "interface_vendor_xml"),
     (FB + "/p:addData", "data", lambda p: _pou(p, "FB_Drive"), "vendor_xml"),

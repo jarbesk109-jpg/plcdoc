@@ -425,6 +425,7 @@ def _residual_add_data(
 _POU_CHILDREN = frozenset({"interface", "actions", "body", "documentation", "addData"})
 _ACTION_CHILDREN = frozenset({"body", "documentation", "addData"})
 _METHOD_CHILDREN = frozenset({"interface", "body", "documentation", "addData"})
+_ACCESSOR_CHILDREN = frozenset({"interface", "body", "addData"})
 _PROPERTY_CHILDREN = frozenset(
     {"interface", "SetAccessor", "GetAccessor", "documentation", "addData"}
 )
@@ -481,22 +482,28 @@ class _Interface:
 def _parse_interface(
     owner: Element, ns: str, scope: str, warnings: list[str],
     configuration: str | None, application: str | None,
+    *, residual_tags: frozenset[str] = frozenset(), variables_as_xml: bool = False,
 ) -> _Interface:
     """Parse ``owner/interface`` the same way for POUs, methods and accessors.
 
     *scope* is the scope path stored on every variable (``FB_Drive``,
     ``FB_Drive.M_Start``, ``FB_Drive.P_Speed.Get``).
+    Content without fields on the owning model stays in ordered residual XML:
+    *residual_tags* selects named children; *variables_as_xml* selects variable sections.
     """
     result = _Interface()
     interface = owner.find(_q(ns, "interface"))
     if interface is None:
         return result
-    result.comment = _documentation(interface, ns)
+    if "documentation" not in residual_tags:
+        result.comment = _documentation(interface, ns)
     for child in interface:
         if not isinstance(child.tag, str):
             continue
         namespace, local = _split(child.tag)
-        if namespace == ns and local == "returnType":
+        if namespace == ns and local in residual_tags:
+            result.vendor_xml.append(_canonical_xml(child, residual=True))
+        elif namespace == ns and local == "returnType":
             result.return_type = _type_name(child, ns, f"{scope} return type", warnings)
             result.return_type_xml = _canonical_xml(child)
         elif namespace == ns and local == "documentation":
@@ -511,6 +518,11 @@ def _parse_interface(
                 continue
             if section not in KNOWN_SECTIONS:
                 warnings.append(f"{scope}: unrecognised variable section <{local}>")
+            if variables_as_xml:
+                result.vendor_xml.append(_canonical_xml(child, residual=True))
+                if child.find(_q(ns, "variable")) is not None:
+                    warnings.append(f"{scope}: unmodelled variable section <{local}> preserved as XML")
+                continue
             result.variables.extend(_parse_variables(
                 child, ns, section, scope, warnings, configuration, application,
             ))
@@ -554,9 +566,9 @@ def _parse_property(
 ) -> Property:
     name = elem.get("name", "")
     scope = f"{pou_name}.{name}"
-    interface = _parse_interface(elem, ns, scope, warnings, configuration, application)
-    if interface.variables:
-        warnings.append(f"{scope}: variables declared on the property itself are ignored")
+    interface = _parse_interface(
+        elem, ns, scope, warnings, configuration, application, variables_as_xml=True,
+    )
     prop = Property(
         name=name, type=interface.return_type, type_xml=interface.return_type_xml,
         comment=_documentation(elem, ns) or interface.comment,
@@ -577,10 +589,13 @@ def _parse_accessor(
     elem: Element, ns: str, kind: str, scope: str, warnings: list[str],
     configuration: str | None, application: str | None,
 ) -> Accessor:
-    interface = _parse_interface(elem, ns, scope, warnings, configuration, application)
+    interface = _parse_interface(
+        elem, ns, scope, warnings, configuration, application,
+        residual_tags=frozenset({"documentation", "returnType"}),
+    )
     accessor = Accessor(
         kind=kind, variables=interface.variables, interface_vendor_xml=interface.vendor_xml,
-        vendor_xml=_residual_xml(elem, ns, _OBJECT_ID_ONLY, _METHOD_CHILDREN),
+        vendor_xml=_residual_xml(elem, ns, _OBJECT_ID_ONLY, _ACCESSOR_CHILDREN),
     )
     body = elem.find(_q(ns, "body"))
     if body is not None:
