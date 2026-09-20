@@ -81,7 +81,7 @@ class CrossReference:
 
 
 def cross_reference(project: Project) -> CrossReference:
-    """Scan every ST code unit of *project*; references come back in scan order."""
+    """Scan ST and supported graphical code units of *project*, returning references in scan order."""
     scanner = _Scanner(_Index(project))
     for unit in _units(project):
         if unit.body_language == "ST" and unit.body_text:
@@ -402,8 +402,8 @@ _DIRECTION = {  # section -> (formal access, actual access)
     "output": ("read", "write"),
     "inout": ("readwrite", "readwrite"),
 }
-# LD/FBD: a block pin's access follows its group; a free-standing variable box its element kind.
-_PIN_ACCESS_BY_GROUP = {"inputVariables": "write", "outputVariables": "read", "inOutVariables": "readwrite"}
+# LD/FBD groups supply the direction only when the formal declaration is unavailable.
+_PIN_SECTION_BY_GROUP = {"inputVariables": "input", "outputVariables": "output", "inOutVariables": "inout"}
 _PIN_ACCESS_BY_ELEMENT = {"inVariable": "read", "outVariable": "write", "inOutVariable": "readwrite"}
 
 
@@ -416,10 +416,10 @@ def _expression_text(xml: str) -> str | None:
     return None
 
 
-def _direction(formal: Variable | None, operator: str) -> tuple[str, str]:
+def _direction(formal: Variable | None, fallback_section: str = "input") -> tuple[str, str]:
     """Parameter direction rule (Decision 011)."""
     if formal is None:
-        return _DIRECTION["output" if operator == "=>" else "input"]
+        return _DIRECTION[fallback_section]
     if formal.section == "inout" and formal.constant:
         return ("read", "read")
     return _DIRECTION.get(formal.section, ("read", "read"))
@@ -498,12 +498,13 @@ class _Scanner:
         if callee is None:
             return  # nothing to attach pins to (no name, or an enum literal)
         # Exactly one reference per pin; a pin listed under several groups merges to readwrite.
+        formals = {v.name.lower(): v for v in callee.formals or []}
         pins: dict[str, str] = {}
         for group in block:
             if not isinstance(group.tag, str):
                 continue
-            direction = _PIN_ACCESS_BY_GROUP.get(_split_tag(group.tag)[1])
-            if direction is None:
+            section = _PIN_SECTION_BY_GROUP.get(_split_tag(group.tag)[1])
+            if section is None:
                 continue
             for pin in group:
                 if not isinstance(pin.tag, str) or _split_tag(pin.tag)[1] != "variable":
@@ -511,6 +512,7 @@ class _Scanner:
                 name = pin.get("formalParameter", "")
                 if not name:
                     continue
+                direction = _direction(formals.get(name.lower()), section)[0]
                 previous = pins.get(name)
                 pins[name] = direction if previous in (None, direction) else "readwrite"
         for name, access in pins.items():
@@ -518,9 +520,7 @@ class _Scanner:
             if callee.target is None:
                 self.result.unresolved.append(Unresolved(name, access, location, "undeclared callee"))
                 continue
-            formal = None
-            if callee.formals is not None:
-                formal = next((v for v in callee.formals if v.name.lower() == name.lower()), None)
+            formal = formals.get(name.lower())
             member = f"{callee.member}.{name}" if callee.member else name
             self.result.references.append(Reference(
                 callee.target, member, _variable_target(formal) if formal is not None else None,
@@ -564,7 +564,7 @@ class _Scanner:
                         elif frame.arg_start:
                             formals = frame.callee.formals
                             if formals is not None and frame.arg_index < len(formals):
-                                access = _direction(formals[frame.arg_index], ":=")[1]
+                                access = _direction(formals[frame.arg_index])[1]
                     self._emit(path, access)
                     i = path.end
                 # Index contents come after the head in scan order: "a[i]" emits a, then i.
@@ -661,7 +661,7 @@ class _Scanner:
         formal = None
         if callee.formals is not None:
             formal = next((v for v in callee.formals if v.name.lower() == name.lower()), None)
-        formal_access, actual_access = _direction(formal, operator)
+        formal_access, actual_access = _direction(formal, "output" if operator == "=>" else "input")
         frame.pending_actual = actual_access
         if callee.target is None:
             self.result.unresolved.append(Unresolved(name, formal_access, location, "undeclared callee"))

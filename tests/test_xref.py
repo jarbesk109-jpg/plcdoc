@@ -574,3 +574,24 @@ def test_ld_storage_and_negation_do_not_change_access():
     assert [(r.text, r.access) for r in x.references if r.location.unit == "PRG_Alarm"] == [
         ("bDoorClosed", "read"), ("bHorn", "write"),
     ]
+
+
+@pytest.mark.parametrize("constant_groups", [
+    ["inOutVariables"], ["inputVariables", "inOutVariables"], ["inOutVariables", "inputVariables"],
+])
+def test_ld_pins_follow_the_shared_formal_direction_rule(constant_groups):
+    """SYNTHETIC: resolved formals, including CONSTANT, determine pin access before merging."""
+    project = _ld_project(
+        _in_out_project(),
+        _block_xml(1, "fbConv1", _pin("inputVariables", "bStart"), _pin("outputVariables", "bRun"),
+                   _pin("inOutVariables", "io"), *[_pin(group, "ioc") for group in constant_groups]),
+    )
+    x = cross_reference(project)
+    assert [_ld_row(r) for r in x.references if r.location.unit == P] == [
+        (P, "1", "fbConv1", "call", "v:PLC_PRG.fbConv1", "", None),
+        (P, "1", "bStart", "write", "v:PLC_PRG.fbConv1", "bStart", "v:FB_Motor.bStart"),
+        (P, "1", "bRun", "read", "v:PLC_PRG.fbConv1", "bRun", "v:FB_Motor.bRun"),
+        (P, "1", "io", "readwrite", "v:PLC_PRG.fbConv1", "io", "v:FB_Motor.io"),
+        (P, "1", "ioc", "read", "v:PLC_PRG.fbConv1", "ioc", "v:FB_Motor.ioc"),
+    ]
+    assert [u for u in x.unresolved if u.location.unit == P] == []
