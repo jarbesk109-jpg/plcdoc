@@ -399,15 +399,22 @@ def _residual_xml(
             continue
         namespace, local = _split(child.tag)
         if namespace == ns and local == "addData":
-            for data in child:
-                if not isinstance(data.tag, str):
-                    continue
-                if data.tag == _q(ns, "data") and data.get("name") in modelled_data:
-                    continue
-                residual.append(_canonical_xml(data, residual=True))
+            residual.extend(_residual_add_data(child, ns, modelled_data))
         elif namespace != ns or local not in expected:
             residual.append(_canonical_xml(child, residual=True))
     return residual
+
+
+def _residual_add_data(
+    add_data: Element, ns: str, modelled_data: frozenset[str] | set[str],
+) -> list[str]:
+    """Unmodelled children of this addData container only, in source order."""
+    return [
+        _canonical_xml(data, residual=True)
+        for data in add_data
+        if isinstance(data.tag, str)
+        and not (data.tag == _q(ns, "data") and data.get("name") in modelled_data)
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -495,9 +502,7 @@ def _parse_interface(
         elif namespace == ns and local == "documentation":
             continue
         elif namespace == ns and local == "addData":
-            result.vendor_xml.extend(_residual_xml(interface, ns, _OBJECT_ID_ONLY, frozenset(
-                _local(other.tag) for other in interface if isinstance(other.tag, str)
-            )))
+            result.vendor_xml.extend(_residual_add_data(child, ns, _OBJECT_ID_ONLY))
         else:
             section = _section_name(local) if namespace == ns else None
             if section is None:

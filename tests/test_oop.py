@@ -343,6 +343,65 @@ def _vendor_fields(obj):
     return {name: getattr(obj, name) for name in ("vendor_xml", "interface_vendor_xml") if hasattr(obj, name)}
 
 
+INTERFACE_OWNERS = [
+    (FB, lambda p: _pou(p, "FB_Drive")),
+    (METHOD, lambda p: _pou(p, "FB_Drive").methods[0]),
+    (PROPERTY, lambda p: _pou(p, "FB_Drive").properties[0]),
+    (PROPERTY + "/p:GetAccessor", lambda p: _pou(p, "FB_Drive").properties[0].getter),
+    (PROPERTY + "/p:SetAccessor", lambda p: _pou(p, "FB_Drive").properties[0].setter),
+]
+
+
+@pytest.mark.parametrize("xpath,owner", INTERFACE_OWNERS, ids=["pou", "method", "property", "get", "set"])
+def test_interface_residuals_once_in_source_order(xpath, owner):
+    """SYNTHETIC: mixed foreign children and multiple addData stay at their interface, once each."""
+    root = ET.parse(DRIVE_OOP).getroot()
+    wrapper = root.find(xpath, NS)
+    interface = wrapper.find("p:interface", NS)
+    for add_data in interface.findall("p:addData", NS):
+        interface.remove(add_data)  # replace the property's AccessModifiers with a controlled fixture
+    outer = ET.SubElement(wrapper, PREFIX + "addData")
+    ET.SubElement(outer, PREFIX + "data", name="urn:outer")
+    before = parse_element(root)
+    assert owner(before).interface_vendor_xml == []
+
+    extensions = ET.fromstring(f'''<extensions xmlns="{NS['p']}" xmlns:v="urn:vendor">
+      <v:Before marker="1"/>
+      <addData>
+        <data name="http://www.3s-software.com/plcopenxml/objectid"><ObjectId>noise-1</ObjectId></data>
+        <data name="urn:first" marker="2"/>
+        <v:data name="http://www.3s-software.com/plcopenxml/objectid" marker="3"/>
+      </addData>
+      <v:returnType marker="4"/>
+      <addData>
+        <data name="urn:second" marker="5"/>
+        <data name="http://www.3s-software.com/plcopenxml/objectid"><ObjectId>noise-2</ObjectId></data>
+      </addData>
+      <v:After marker="6"/>
+    </extensions>''')
+    interface.extend(extensions)
+    after = parse_element(root)
+    fragments = [ET.fromstring(xml) for xml in owner(after).interface_vendor_xml]
+    assert [(elem.tag, elem.get("marker")) for elem in fragments] == [
+        ("{urn:vendor}Before", "1"),
+        (PREFIX + "data", "2"),
+        ("{urn:vendor}data", "3"),
+        ("{urn:vendor}returnType", "4"),
+        (PREFIX + "data", "5"),
+        ("{urn:vendor}After", "6"),
+    ]
+    assert all(elem.find(".//p:ObjectId", NS) is None for elem in fragments)
+    assert owner(after).vendor_xml == owner(before).vendor_xml
+    assert len(owner(after).vendor_xml) == 1
+    assert ET.fromstring(owner(after).vendor_xml[0]).get("name") == "urn:outer"
+
+    # No other model field or owning location receives a copy of these fragments.
+    comparable = deepcopy(after)
+    owner(comparable).interface_vendor_xml = []
+    comparable.warnings = before.warnings
+    assert comparable == before
+
+
 RESIDUAL_CASES = [
     (FB + "/p:interface", "addData", lambda p: _pou(p, "FB_Drive"), "interface_vendor_xml"),
     (FB + "/p:addData", "data", lambda p: _pou(p, "FB_Drive"), "vendor_xml"),
