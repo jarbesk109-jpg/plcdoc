@@ -316,7 +316,7 @@ VAR VAR_INPUT VAR_OUTPUT VAR_IN_OUT VAR_TEMP VAR_STAT VAR_EXTERNAL END_VAR CONST
 PERSISTENT
 """.split())
 _SELF = frozenset({"THIS", "SUPER"})
-_ASSIGN = frozenset({":=", "S=", "R=", "REF="})
+_WORD_ASSIGN = frozenset({"S", "R", "REF"})
 
 _UNSIGNED_REAL = r"[0-9][0-9_]*(?:\.[0-9][0-9_]*)?"
 _DECIMAL = rf"{_UNSIGNED_REAL}(?:[eE][+-]?[0-9]+)?"
@@ -337,7 +337,7 @@ _TOKEN_RE = re.compile(
         |[A-Za-z_][A-Za-z0-9_]*\#(?:[+-]?(?:{_BASED_NUMBER}|{_DECIMAL})
             |{_STRING_LITERAL}|[A-Za-z_][A-Za-z0-9_]*)
         |{_BASED_NUMBER}|{_DECIMAL})
-  | (?P<assign>(?i:REF=|S=|R=)|:=)
+  | (?P<assign>:=)
   | (?P<ident>[A-Za-z_][A-Za-z0-9_]*)
   | (?P<op>=>|<=|>=|<>|\*\*|[-+*/<>=^.(),;:\[\]])
   | (?P<other>.)
@@ -558,6 +558,12 @@ class _Scanner:
                 elif following is not None and following.kind == "assign":
                     self._emit(path, "write")
                     i = path.end + 1
+                elif not stack and following is not None and following.kind == "ident" \
+                        and following.text.upper() in _WORD_ASSIGN \
+                        and path.end + 1 < end and tokens[path.end + 1].text == "=":
+                    # S/R/REF are operators only after a left-hand path; "IF R=TRUE" reads R.
+                    self._emit(path, "write")
+                    i = path.end + 2
                 elif following is not None and following.text == "(":
                     callee = self._emit(path, "call")
                     self._scan_indexes(tokens, path)

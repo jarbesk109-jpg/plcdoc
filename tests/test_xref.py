@@ -246,6 +246,25 @@ def test_typed_literals_stop_before_adjacent_operators(literal, operator):
     assert [u for u in x.unresolved if u.location.unit == P] == []
 
 
+@pytest.mark.parametrize("symbol", ["R", "S", "REF", "r", "s", "ref"])
+def test_word_assignment_names_are_read_in_equalities(symbol):
+    """SYNTHETIC: spaces around equality cannot hide R/S/REF; set/reset still writes its lhs."""
+    for gap in ("", " ", "\t"):
+        root = ET.parse(LARGE).getroot()
+        _with_locals(root, P, {symbol: BOOL})
+        body = f"IF {symbol}{gap}=TRUE THEN {symbol} := FALSE; END_IF {symbol} S= TRUE; {symbol} R= FALSE;"
+        _set_body(root, P, body)
+        x = cross_reference(parse_element(root))
+        rows = [r for r in x.references if r.location.unit == P]
+        assert [(r.text, r.access) for r in rows] == [
+            (symbol, "read"), (symbol, "write"), (symbol, "write"), (symbol, "write"),
+        ]
+        assert rows[0].location.column == 4
+        assert rows[1].location.column == body.index("THEN ") + len("THEN ") + 1
+        assert all(r.target == Target("variable", "Device", "Application", P, symbol) for r in rows)
+        assert [u for u in x.unresolved if u.location.unit == P] == []
+
+
 ONE_LINE = (
     "IF a THEN b := 1; ELSIF c THEN d := 2; ELSE e := 3; END_IF "
     "WHILE f DO g := 4; END_WHILE REPEAT h := 5; UNTIL k END_REPEAT "
