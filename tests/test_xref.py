@@ -337,6 +337,62 @@ def test_var_external_is_an_alias():
     assert x.warnings == []
 
 
+@pytest.mark.parametrize("unit,element_path", [
+    (M, ".//p:Method[@name='M_Start']"),
+    (G, ".//p:GetAccessor"),
+    (S, ".//p:SetAccessor"),
+])
+def test_unit_externals_normalise_or_report_missing_global(unit, element_path):
+    """SYNTHETIC: a method/accessor external is an alias, including its read occurrences."""
+    root = ET.parse(DRIVE_OOP).getroot()
+    element = root.find(element_path, NS)
+    section = ET.SubElement(element.find("p:interface", NS), PREFIX + "externalVars")
+    _declare_global(section, "xShared")
+    _declare_global(section, "xMissing")
+    gvl = ET.SubElement(root.find(".//p:resource", NS), PREFIX + "globalVars", name="Shared")
+    _declare_global(gvl, "xShared")
+    element.find("p:body/p:ST/" + XHTML, NS).text = "xShared := xShared; xMissing := xMissing;"
+    x = cross_reference(parse_element(root))
+    global_target = Target("variable", "Device", "Application", "Shared", "xShared")
+    alias = Target("variable", "Device", "Application", unit, "xShared")
+    rows = [r for r in x.references if r.location.unit == unit]
+    assert [(r.text, r.access, r.target, r.member, r.member_target, r.via) for r in rows] == [
+        ("xShared", "write", global_target, "", None, alias),
+        ("xShared", "read", global_target, "", None, alias),
+    ]
+    assert [(u.text, u.access, u.reason) for u in x.unresolved if u.location.unit == unit] == [
+        ("xMissing", "write", "external without global"),
+        ("xMissing", "read", "external without global"),
+    ]
+    assert by_target(x)[global_target] == rows
+    assert alias not in by_target(x)
+    assert x.warnings == []
+
+
+@pytest.mark.parametrize("prefix", ["fbConv1", "FB_Motor"])
+def test_qualified_externals_normalise_or_report_missing_global(prefix):
+    root = ET.parse(LARGE).getroot()
+    _with_locals(root, "FB_Motor", {"bHorn": BOOL, "bMissing": BOOL}, section="externalVars")
+    _set_body(root, P, f"{prefix}.bHorn := TRUE; {prefix}.bMissing := FALSE;")
+    x = cross_reference(parse_element(root))
+    owner = ("Device", "Application")
+    global_target = Target("variable", *owner, "GVL_IO", "bHorn")
+    instance = Target("variable", *owner, P, "fbConv1")
+    alias = Target("variable", *owner, "FB_Motor", "bHorn")
+    rows = [r for r in x.references if r.location.unit == P]
+    assert [(r.text, r.access, r.target, r.member, r.member_target, r.via) for r in rows] == [
+        (f"{prefix}.bHorn", "write", instance, "bHorn", global_target, None)
+        if prefix == "fbConv1" else
+        (f"{prefix}.bHorn", "write", global_target, "", None, alias),
+    ]
+    assert rows[0] in by_target(x)[global_target]
+    assert alias not in by_target(x)
+    assert [(u.text, u.access, u.reason) for u in x.unresolved if u.location.unit == P] == [
+        (f"{prefix}.bMissing", "write", "external without global"),
+    ]
+    assert x.warnings == []
+
+
 def test_var_external_ambiguity_warns():
     root = ET.parse(TYPES_QUALIFIERS).getroot()
     for gvl in root.findall(".//p:resource/p:globalVars", NS):
@@ -403,6 +459,73 @@ def test_var_in_out_actuals(body, expected, unresolved):
     x = cross_reference(project)
     assert [_short(r) for r in x.references if r.location.unit == P] == expected
     assert [(u.text, u.access, u.reason) for u in x.unresolved if u.location.unit == P] == unresolved
+
+
+def _synthetic_pou(name, interface):
+    return ET.fromstring(f'<pou xmlns="{NS["p"]}" name="{name}" pouType="functionBlock">'
+                         f'<interface>{interface}</interface></pou>')
+
+
+@pytest.mark.parametrize("shape", ["variable", "inline-field", "inline-array-field"])
+@pytest.mark.parametrize("section,formal_access,actual_access", [
+    ("inOutVars", "readwrite", "readwrite"), ("outputVars", "read", "write"),
+])
+def test_nested_callable_uses_final_declaration_owner(shape, section, formal_access, actual_access):
+    """SYNTHETIC: the project-level member's type must not bind an application-local namesake."""
+    root = ET.parse(DRIVE_OOP).getroot()
+    project_pous = root.find("./p:types/p:pous", NS)
+    arg = '<variable name="arg"><type><INT/></type></variable>'
+    project_pous.append(_synthetic_pou("FB_Child", f'<{section}>{arg}</{section}>'))
+    wrapper = ET.SubElement(root.find(".//p:resource/p:addData", NS), PREFIX + "data",
+                            name="http://www.3s-software.com/plcopenxml/pou")
+    wrapper.append(_synthetic_pou("FB_Child", f'<inputVars>{arg}</inputVars>'))
+    child_type = '<derived name="FB_Child"/>'
+    if shape == "inline-array-field":
+        child_type = f'<array><dimension lower="1" upper="2"/><baseType>{child_type}</baseType></array>'
+    if shape == "variable":
+        declaration = f'<variable name="inner"><type>{child_type}</type></variable>'
+        member, called_path, leaf = "inner", "outer.inner", "v:FB_Outer.inner"
+    else:
+        declaration = ('<variable name="s"><type><struct><variable name="d"><type>' + child_type
+                       + '</type></variable></struct></type></variable>')
+        member, called_path, leaf = "s.d", "outer.s.d", None
+        if shape == "inline-array-field":
+            called_path += "[1]"
+    project_pous.append(_synthetic_pou("FB_Outer", f'<localVars>{declaration}</localVars>'))
+    _with_locals(root, P, {"outer": '<derived name="FB_Outer"/>', "v": INT})
+    _set_body(root, P, f"{called_path}(arg := v);")
+    x = cross_reference(parse_element(root))
+    rows = [r for r in x.references if r.location.unit == P]
+    assert [_short(r) for r in rows] == [
+        (f"outer.{member}", "call", "v:PLC_PRG.outer", member, leaf),
+        ("arg", formal_access, "v:PLC_PRG.outer", f"{member}.arg", "v:FB_Child.arg"),
+        ("v", actual_access, "v:PLC_PRG.v", "", None),
+    ]
+    assert rows[1].member_target == Target("variable", None, None, "FB_Child", "arg")
+    assert (rows[0].target.configuration, rows[0].target.application) == ("Device", "Application")
+    assert x.unresolved == [] and x.warnings == []
+
+
+@pytest.mark.parametrize("positional", [False, True], ids=["named", "positional"])
+@pytest.mark.parametrize("array_field", [False, True], ids=["field", "array-field"])
+def test_inline_field_call_keeps_formal_signature(positional, array_field):
+    root = _in_out_project()
+    child_type = '<derived name="FB_Motor"/>'
+    if array_field:
+        child_type = f'<array><dimension lower="1" upper="2"/><baseType>{child_type}</baseType></array>'
+    _with_locals(root, P, {"s": f'<struct><variable name="d"><type>{child_type}</type></variable></struct>'})
+    actuals = "TRUE, FALSE, FALSE, TRUE, v1, v2" if positional else "io := v1, ioc := v2"
+    _set_body(root, P, f"s.d{'[1]' if array_field else ''}({actuals});")
+    x = cross_reference(parse_element(root))
+    expected = [("s.d", "call", "v:PLC_PRG.s", "d", None)]
+    if not positional:
+        expected.append(("io", "readwrite", "v:PLC_PRG.s", "d.io", "v:FB_Motor.io"))
+    expected.append(("v1", "readwrite", "v:PLC_PRG.v1", "", None))
+    if not positional:
+        expected.append(("ioc", "read", "v:PLC_PRG.s", "d.ioc", "v:FB_Motor.ioc"))
+    expected.append(("v2", "read", "v:PLC_PRG.v2", "", None))
+    assert [_short(r) for r in x.references if r.location.unit == P] == expected
+    assert [u for u in x.unresolved if u.location.unit == P] == []
 
 
 def _owner_chain_case(case):

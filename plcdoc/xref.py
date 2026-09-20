@@ -674,12 +674,12 @@ class _Scanner:
         if isinstance(resolved, str):
             self.result.unresolved.append(Unresolved(path.text, access, location, resolved))
             return _Callee(None, "", None, None) if access == "call" else None
-        head, member, member_target, last_decl = resolved
+        head, member, member_target, last_decl, last_owner = resolved
         self.result.references.append(Reference(
             head.target, member, member_target, access, location, path.text, head.via,
         ))
         if access == "call":
-            return _Callee(head.target, member, head.via, self._formals(last_decl, head.owner))
+            return _Callee(head.target, member, head.via, self._formals(last_decl, last_owner))
         return None
 
     def _formal(self, frame: _Frame, path: _Path, operator: str) -> None:
@@ -704,7 +704,7 @@ class _Scanner:
 
     def _formals(self, decl: object, owner: _Owner) -> list[Variable] | None:
         """Interface parameters (input, inout, output; declaration order) of a callable declaration."""
-        if isinstance(decl, Variable):
+        if isinstance(decl, (Variable, _InlineField)):
             decl = self._derived(decl, owner)
         if isinstance(decl, (Pou, Method)):
             return [v for v in decl.variables if v.section in ("input", "inout", "output")]
@@ -713,7 +713,7 @@ class _Scanner:
     # -- resolution ---------------------------------------------------------- #
 
     def _resolve(self, path: _Path, is_call: bool):
-        """-> (head, member, member_target, last_decl) | reason string | _ENUM_LITERAL."""
+        """-> (head, member, member_target, last_decl, last_owner) | reason | _ENUM_LITERAL."""
         segments = path.segments
         unit = self._unit
         owner = (unit.configuration, unit.application)
@@ -736,11 +736,14 @@ class _Scanner:
         # 1. the unit's own variables
         for variable in unit.own_variables:
             if variable.name.lower() == key:
-                return self._members(_Head(_variable_target(variable), variable, owner), segments[1:])
+                head = self._normalise((_variable_target(variable), variable), owner)
+                if isinstance(head, str):
+                    return head
+                return self._members(head, segments[1:])
         # 2. the unit's result symbol (not when called)
         if unit.result is not None and unit.result.lower() == key and not is_call:
             target = Target("result", *owner, unit.path, unit.result)
-            return _Head(target, None, owner), "", None, None
+            return _Head(target, None, owner), "", None, None, owner
         # 3./4. the owning POU's variables, then its methods/properties/actions
         found = _member_of_pou(unit.pou, name)
         if found is not None:
@@ -759,7 +762,7 @@ class _Scanner:
         if pou is not None:
             pou_owner = (pou.configuration, pou.application)
             if len(segments) == 1:
-                return _Head(Target("pou", *pou_owner, pou.name, pou.name), pou, pou_owner), "", None, pou
+                return _Head(Target("pou", *pou_owner, pou.name, pou.name), pou, pou_owner), "", None, pou, pou_owner
             found = _member_of_pou(pou, segments[1].text)
             if found is None:
                 return "no such member"
@@ -806,7 +809,7 @@ class _Scanner:
         """Walk the member path after the head through the declared types."""
         member = ".".join(token.text for token in rest)
         if not rest:
-            return head, "", None, head.decl
+            return head, "", None, head.decl, head.owner
         member_target: Target | None = None
         decl: object = head.decl
         type_elem = self.index.type_element(decl) if isinstance(decl, Variable) else None
@@ -815,16 +818,21 @@ class _Scanner:
             if isinstance(decl, Pou):
                 found = _member_of_pou(decl, token.text)
                 normalised = self._normalise(found, owner) if found is not None else "no such member"
+                if normalised == "external without global":
+                    return normalised
                 if isinstance(normalised, str):
                     member_target, decl, type_elem = None, None, None
                 else:
                     member_target, decl, owner = normalised.target, normalised.decl, normalised.owner
                     type_elem = self.index.type_element(decl) if isinstance(decl, Variable) else None
             elif isinstance(decl, (Variable, _InlineField)):
-                member_target, decl, type_elem, owner = self._step_type(type_elem, owner, token.text)
+                step = self._step_type(type_elem, owner, token.text)
+                if isinstance(step, str):
+                    return step
+                member_target, decl, type_elem, owner = step
             else:
                 member_target, decl, type_elem = None, None, None
-        return head, member, member_target, decl
+        return head, member, member_target, decl, owner
 
     def _step_type(self, type_elem: ET.Element | None, owner: _Owner, name: str):
         """One member step through a ``<type>`` (or ``<baseType>``) element."""
@@ -841,7 +849,7 @@ class _Scanner:
                     return None, None, None, owner
                 normalised = self._normalise(found, (pou.configuration, pou.application))
                 if isinstance(normalised, str):
-                    return None, None, None, owner
+                    return normalised
                 decl = normalised.decl
                 next_type = self.index.type_element(decl) if isinstance(decl, Variable) else None
                 return normalised.target, decl, next_type, normalised.owner
@@ -861,13 +869,13 @@ class _Scanner:
             for variable in child.findall(f"{{{namespace}}}variable"):
                 if variable.get("name", "").lower() == name.lower():
                     field_type = variable.find(f"{{{namespace}}}type")
-                    return None, _InlineField(), field_type, owner
+                    return None, _InlineField(field_type), field_type, owner
             return None, None, None, owner
         return None, None, None, owner  # pointer, elementary, string, unknown: stop
 
-    def _derived(self, variable: Variable, owner: _Owner) -> Pou | None:
+    def _derived(self, variable: Variable | _InlineField, owner: _Owner) -> Pou | None:
         """The POU a variable is an instance of (through arrays), or None."""
-        type_elem = self.index.type_element(variable)
+        type_elem = variable.type_elem if isinstance(variable, _InlineField) else self.index.type_element(variable)
         while type_elem is not None:
             child = _type_shape(type_elem)
             if child is None:
@@ -882,5 +890,8 @@ class _Scanner:
         return None
 
 
+@dataclass(frozen=True)
 class _InlineField:
-    """Marker declaration for a field of an anonymous struct: the walk continues, no target."""
+    """An anonymous struct field has a type for further walks and calls, but no target."""
+
+    type_elem: ET.Element | None
