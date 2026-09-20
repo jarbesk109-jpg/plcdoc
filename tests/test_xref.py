@@ -573,6 +573,8 @@ def _owner_chain_case(case):
         wrapper = next(d for d in data if d.find("p:pou[@name='FC_Scale']", NS) is not None)
         duplicate = deepcopy(wrapper)
         duplicate.find(".//p:ST/" + XHTML, NS).text = "FC_Scale := 0.0;"
+        # Same Target identity, observably different signature: choosing the last must fail.
+        duplicate.find(".//p:interface/p:inputVars", NS).tag = PREFIX + "inOutVars"
         data.append(duplicate)
     elif case == "two-gvls":
         for gvl in root.findall(".//p:resource/p:globalVars", NS):
@@ -601,6 +603,14 @@ def test_owner_chain_resolution(case):
         assert x.warnings == []
     elif case == "conflicting-pou":
         assert {r.target for r in calls} == {Target("pou", "Device", "Application", "FC_Scale", "FC_Scale")}
+        formal = next(r for r in x.references if r.location.unit == P and r.text == "iRaw")
+        actual = next(r for r in x.references if r.location.unit == P and r.text == "iTankLevelRaw")
+        assert (formal.access, formal.member, formal.member_target) == (
+            "write", "iRaw", Target("variable", "Device", "Application", "FC_Scale", "iRaw"),
+        )
+        assert (actual.access, actual.target) == (
+            "read", Target("variable", "Device", "Application", "GVL_IO", "iTankLevelRaw"),
+        )
         assert x.warnings == ["ambiguous POU 'FC_Scale' in Device/Application: using the first definition"]
     else:
         dup = next(r for r in x.references if r.text == "bDup")
