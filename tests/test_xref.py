@@ -818,6 +818,46 @@ def test_ld_fan_out_keeps_one_reference_per_pin():
     assert rows[-1] == (P, "4", "bMotor1", "write", "v:GVL_IO.bMotor1", "", None)
 
 
+@pytest.mark.parametrize("marker_namespace", ["", NS["p"]], ids=["unqualified", "plcopen"])
+@pytest.mark.parametrize("marker_text", ["execute", "Execute"])
+def test_ld_execute_box_is_located_unresolved(marker_namespace, marker_text):
+    """SYNTHETIC Execute marker in sample 03's actual vendorElement wrapper shape."""
+    root = ET.parse(LARGE).getroot()
+    template = root.find(".//p:LD/p:vendorElement", NS)
+    execute = deepcopy(template)
+    execute.set("localId", "90")
+    marker = execute.find("p:addData/p:data/ElementType", NS)
+    marker.tag = f"{{{marker_namespace}}}ElementType" if marker_namespace else "ElementType"
+    marker.text = marker_text
+    execute.find("p:alternativeText/" + XHTML, NS).text = "bMotor1 := TRUE;"
+    unknown = deepcopy(template)
+    unknown.set("localId", "91")
+    unknown.find("p:addData/p:data/ElementType", NS).text = "other"
+    foreign = deepcopy(execute)
+    foreign.set("localId", "92")
+    foreign.find("p:addData/p:data", NS)[0].tag = "{urn:vendor}ElementType"
+    wrong_extension = deepcopy(execute)
+    wrong_extension.set("localId", "93")
+    wrong_extension.find("p:addData/p:data", NS).set("name", "urn:vendor:fbdelementtype")
+    project = _ld_project(root, *[ET.tostring(e, encoding="unicode") for e in
+                                 (template, execute, unknown, foreign, wrong_extension)],
+                          '<contact localId="94"><variable>bDoorClosed</variable></contact>',
+                          '<coil localId="95"><variable>bHorn</variable></coil>')
+    before = deepcopy(project)
+    x = cross_reference(project)
+    assert [(u.text, u.access, u.reason, u.location.configuration, u.location.application,
+             u.location.unit, u.location.local_id, u.location.line, u.location.column)
+            for u in x.unresolved if u.location.unit == P] == [
+        ("Execute", "call", "vendor element", "Device", "Application", P, "90", None, None),
+    ]
+    assert [_ld_row(r) for r in x.references if r.location.unit == P] == [
+        (P, "94", "bDoorClosed", "read", "v:GVL_IO.bDoorClosed", "", None),
+        (P, "95", "bHorn", "write", "v:GVL_IO.bHorn", "", None),
+    ]
+    assert project == before
+    assert x.warnings == []
+
+
 def test_ld_storage_and_negation_do_not_change_access():
     root = ET.parse(LARGE).getroot()
     root.find(".//p:LD/p:coil", NS).set("storage", "set")

@@ -440,6 +440,23 @@ def _expression_text(xml: str) -> str | None:
     return None
 
 
+def _is_execute_element(xml: str) -> bool:
+    """Recognize the CODESYS Execute marker without interpreting the vendor's code payload."""
+    element = ET.fromstring(xml)
+    namespace, local = _split_tag(element.tag)
+    if local != "vendorElement" or not namespace.startswith("http://www.plcopen.org/xml/tc6"):
+        return False
+    for data in element.findall(f"{{{namespace}}}addData/{{{namespace}}}data"):
+        if data.get("name") != "http://www.3s-software.com/plcopenxml/fbdelementtype":
+            continue
+        for child in data:
+            # Sample 03's ElementType is unqualified; inherited PLCopen is accepted too.
+            if _split_tag(child.tag) in (("", "ElementType"), (namespace, "ElementType")) \
+                    and (child.text or "").strip().lower() == "execute":
+                return True
+    return False
+
+
 def _direction(formal: Variable | None, fallback_section: str = "input") -> tuple[str, str]:
     """Parameter direction rule (Decision 011)."""
     if formal is None:
@@ -493,6 +510,8 @@ class _Scanner:
                 )
             elif element.kind == "block":
                 self._block(element.xml)
+            elif element.kind == "vendorElement" and _is_execute_element(element.xml):
+                self.result.unresolved.append(Unresolved("Execute", "call", self._location(0), "vendor element"))
         self._fixed_location = None
 
     def _graphical_expression(self, text: str | None, access: str) -> None:
