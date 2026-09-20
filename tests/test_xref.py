@@ -461,6 +461,28 @@ def test_var_in_out_actuals(body, expected, unresolved):
     assert [(u.text, u.access, u.reason) for u in x.unresolved if u.location.unit == P] == unresolved
 
 
+@pytest.mark.parametrize("named", [True, False], ids=["named", "positional"])
+def test_inout_expression_actual_is_read_but_bare_actual_is_readwrite(named):
+    """SYNTHETIC unclassifiable actual: use the expression fallback, not in-out direction."""
+    root = _in_out_project()
+    prefix = "io := " if named else "TRUE, FALSE, FALSE, TRUE, "
+    lines = [f"fbConv1({prefix}v1 + 1);", f"fbConv1({prefix}v1);"]
+    _set_body(root, P, "\n".join(lines))
+    x = cross_reference(parse_element(root))
+    rows = [r for r in x.references if r.location.unit == P]
+    expected = []
+    for actual_access in ("read", "readwrite"):
+        expected.append(("fbConv1", "call", "v:PLC_PRG.fbConv1", "", None))
+        if named:
+            expected.append(("io", "readwrite", "v:PLC_PRG.fbConv1", "io", "v:FB_Motor.io"))
+        expected.append(("v1", actual_access, "v:PLC_PRG.v1", "", None))
+    assert [_short(r) for r in rows] == expected
+    assert [(r.location.line, r.location.column) for r in rows if r.text == "v1"] == [
+        (line_number, len("fbConv1(" + prefix) + 1) for line_number in range(1, 3)
+    ]
+    assert [u for u in x.unresolved if u.location.unit == P] == []
+
+
 def _synthetic_pou(name, interface):
     return ET.fromstring(f'<pou xmlns="{NS["p"]}" name="{name}" pouType="functionBlock">'
                          f'<interface>{interface}</interface></pou>')
@@ -747,6 +769,28 @@ def test_ld_block_to_block_wiring():
         (P, "2", "io", "readwrite", "v:PLC_PRG.fbConv2", "io", "v:FB_Motor.io"),
     ]
     assert [u for u in x.unresolved if u.location.unit == P] == []
+
+
+@pytest.mark.parametrize("other_group", ["outputVariables", "inOutVariables"])
+def test_ld_unknown_formal_merges_access_in_both_group_orders(other_group):
+    """SYNTHETIC: an unresolved formal forces group fallback and exposes the merge itself."""
+    for groups in (("inputVariables", other_group), (other_group, "inputVariables")):
+        project = _ld_project(
+            _in_out_project(),
+            _block_xml(1, "fbConv1", *[
+                _pin(group, "opaque", ("2", "io") if group != "outputVariables" else None)
+                for group in groups
+            ]),
+            _block_xml(2, "fbConv2", _pin("inOutVariables", "io", ("1", "opaque"))),
+        )
+        x = cross_reference(project)
+        assert [_ld_row(r) for r in x.references if r.location.unit == P] == [
+            (P, "1", "fbConv1", "call", "v:PLC_PRG.fbConv1", "", None),
+            (P, "1", "opaque", "readwrite", "v:PLC_PRG.fbConv1", "opaque", None),
+            (P, "2", "fbConv2", "call", "v:PLC_PRG.fbConv2", "", None),
+            (P, "2", "io", "readwrite", "v:PLC_PRG.fbConv2", "io", "v:FB_Motor.io"),
+        ]
+        assert [u for u in x.unresolved if u.location.unit == P] == []
 
 
 def test_ld_fan_out_keeps_one_reference_per_pin():
