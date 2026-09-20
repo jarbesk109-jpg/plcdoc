@@ -509,6 +509,51 @@ def test_member_walk_uses_type_structure(declarations, body, expected):
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.parametrize("namespace", ["urn:vendor", ""])
+@pytest.mark.parametrize("depth", range(1, 7))
+def test_member_walk_stops_at_foreign_structural_elements(namespace, depth):
+    """SYNTHETIC: every type step, including containers and inline fields, is namespace-sensitive."""
+    root = _in_out_project()
+    _with_locals(root, P, {"s": '<array><dimension lower="1" upper="2"/><baseType><struct>'
+                  '<variable name="d"><type><derived name="FB_Motor"/></type></variable>'
+                  '</struct></baseType></array>'})
+    path = "/".join(["p:array", "p:baseType", "p:struct", "p:variable", "p:type", "p:derived"][:depth])
+    var_type = root.find(".//p:pou[@name='PLC_PRG']/p:interface/p:localVars/p:variable[@name='s']/p:type", NS)
+    foreign = var_type.find(path, NS)
+    local = foreign.tag.rpartition("}")[2]
+    foreign.tag = f"{{{namespace}}}{local}" if namespace else local
+    _set_body(root, P, "s[1].d.bRun;")
+    x = cross_reference(parse_element(root))
+    assert [_short(r) for r in x.references if r.location.unit == P] == [
+        ("s.d.bRun", "read", "v:PLC_PRG.s", "d.bRun", None),
+    ]
+    assert [u for u in x.unresolved if u.location.unit == P] == []
+
+
+@pytest.mark.parametrize("namespace", ["urn:vendor", ""])
+@pytest.mark.parametrize("path", ["p:derived", "p:array", "p:array/p:baseType", "p:array/p:baseType/p:derived"])
+def test_callable_type_stops_at_foreign_structural_elements(namespace, path):
+    """SYNTHETIC: foreign shapes cannot lend a known FB signature to a call."""
+    root = _in_out_project()
+    is_array = path.startswith("p:array")
+    shape = '<derived name="FB_Motor"/>'
+    if is_array:
+        shape = f'<array><dimension lower="1" upper="2"/><baseType>{shape}</baseType></array>'
+    _with_locals(root, P, {"s": shape})
+    var_type = root.find(".//p:pou[@name='PLC_PRG']/p:interface/p:localVars/p:variable[@name='s']/p:type", NS)
+    foreign = var_type.find(path, NS)
+    local = foreign.tag.rpartition("}")[2]
+    foreign.tag = f"{{{namespace}}}{local}" if namespace else local
+    _set_body(root, P, f"{'s[1]' if is_array else 's'}(io := v1);")
+    x = cross_reference(parse_element(root))
+    assert [_short(r) for r in x.references if r.location.unit == P] == [
+        ("s", "call", "v:PLC_PRG.s", "", None),
+        ("io", "write", "v:PLC_PRG.s", "io", None),
+        ("v1", "read", "v:PLC_PRG.v1", "", None),
+    ]
+    assert [u for u in x.unresolved if u.location.unit == P] == []
+
+
 def _ld_row(r):
     return (r.location.unit, r.location.local_id, r.text, r.access, _t(r.target), r.member, _t(r.member_target))
 

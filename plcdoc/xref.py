@@ -305,6 +305,19 @@ def _split_tag(tag: str) -> tuple[str, str]:
     return "", tag
 
 
+def _type_shape(container: ET.Element | None) -> ET.Element | None:
+    """Return a sole type-shape child only in the container's PLCopen namespace."""
+    if container is None:
+        return None
+    namespace, local = _split_tag(container.tag)
+    if not namespace.startswith("http://www.plcopen.org/xml/tc6") or local not in ("type", "baseType"):
+        return None
+    children = [child for child in container if isinstance(child.tag, str)]
+    if len(children) != 1 or _split_tag(children[0].tag)[0] != namespace:
+        return None
+    return children[0]
+
+
 # --------------------------------------------------------------------------- #
 # Tokenizer
 # --------------------------------------------------------------------------- #
@@ -815,12 +828,9 @@ class _Scanner:
 
     def _step_type(self, type_elem: ET.Element | None, owner: _Owner, name: str):
         """One member step through a ``<type>`` (or ``<baseType>``) element."""
-        if type_elem is None:
+        child = _type_shape(type_elem)
+        if child is None:
             return None, None, None, owner
-        children = [child for child in type_elem if isinstance(child.tag, str)]
-        if len(children) != 1:
-            return None, None, None, owner
-        child = children[0]
         namespace, local = _split_tag(child.tag)
         if local == "derived":
             declared = child.get("name", "")
@@ -845,15 +855,12 @@ class _Scanner:
                         )
             return None, None, None, owner
         if local == "array":
-            base = next((c for c in child if isinstance(c.tag, str) and _split_tag(c.tag)[1] == "baseType"), None)
+            base = child.find(f"{{{namespace}}}baseType")
             return self._step_type(base, owner, name)
         if local == "struct":
-            for variable in child:
-                if isinstance(variable.tag, str) and _split_tag(variable.tag)[1] == "variable" \
-                        and variable.get("name", "").lower() == name.lower():
-                    field_type = next(
-                        (c for c in variable if isinstance(c.tag, str) and _split_tag(c.tag)[1] == "type"), None,
-                    )
+            for variable in child.findall(f"{{{namespace}}}variable"):
+                if variable.get("name", "").lower() == name.lower():
+                    field_type = variable.find(f"{{{namespace}}}type")
                     return None, _InlineField(), field_type, owner
             return None, None, None, owner
         return None, None, None, owner  # pointer, elementary, string, unknown: stop
@@ -862,17 +869,14 @@ class _Scanner:
         """The POU a variable is an instance of (through arrays), or None."""
         type_elem = self.index.type_element(variable)
         while type_elem is not None:
-            children = [child for child in type_elem if isinstance(child.tag, str)]
-            if len(children) != 1:
+            child = _type_shape(type_elem)
+            if child is None:
                 return None
-            child = children[0]
-            local = _split_tag(child.tag)[1]
+            namespace, local = _split_tag(child.tag)
             if local == "derived":
                 return self.index.pou(owner, child.get("name", ""))
             if local == "array":
-                type_elem = next(
-                    (c for c in child if isinstance(c.tag, str) and _split_tag(c.tag)[1] == "baseType"), None,
-                )
+                type_elem = child.find(f"{{{namespace}}}baseType")
                 continue
             return None
         return None
