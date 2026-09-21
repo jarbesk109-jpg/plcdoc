@@ -531,6 +531,8 @@ class _Scanner:
 
     def _block(self, xml: str) -> None:
         block = ET.fromstring(xml)
+        namespace, _ = _split_tag(block.tag)
+        prefix = f"{{{namespace}}}" if namespace else ""
         callee_text = block.get("instanceName") or block.get("typeName") or ""
         callee: _Callee | None = None
         tokens = _tokenize(callee_text)
@@ -544,6 +546,7 @@ class _Scanner:
         # Pins compare case-insensitively like formals; the first spelling is the one reported.
         formals = {v.name.lower(): v for v in callee.formals or []}
         pins: dict[str, tuple[str, str]] = {}  # lower-cased name -> (first spelling, access)
+        actuals: list[tuple[str, str]] = []  # inline expression text, actual access
         for group in block:
             if not isinstance(group.tag, str):
                 continue
@@ -556,9 +559,14 @@ class _Scanner:
                 name = pin.get("formalParameter", "")
                 if not name:
                     continue
-                direction = _direction(formals.get(name.lower()), section)[0]
+                direction, actual_access = _direction(formals.get(name.lower()), section)
                 spelling, previous = pins.get(name.lower(), (name, None))
                 pins[name.lower()] = (spelling, direction if previous in (None, direction) else "readwrite")
+                # Inline actuals live on the pin's connection point (sample 06's ET).
+                # Do not follow connection IDs or inspect vendor payloads.
+                for point in ("connectionPointIn", "connectionPointOut"):
+                    for expression in pin.findall(f"{prefix}{point}/{prefix}expression"):
+                        actuals.append(("".join(expression.itertext()), actual_access))
         for name, access in pins.values():
             location = self._location(0)
             if callee.target is None:
@@ -570,6 +578,8 @@ class _Scanner:
                 callee.target, member, _variable_target(formal) if formal is not None else None,
                 access, location, name, callee.via,
             ))
+        for text, access in actuals:
+            self._graphical_expression(text, access)
 
     def _scan(self, tokens: list[_Token], start: int, end: int, stack: list[_Frame]) -> None:
         i = start

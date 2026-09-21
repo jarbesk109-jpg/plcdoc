@@ -1,11 +1,18 @@
 """Regressions grounded in sample 06, without pinning the pending Execute feature."""
 
+from xml.etree import ElementTree as ET
+
+import pytest
+
 from plcdoc import Location, Target, by_target, cross_reference, parse_file
+from plcdoc.parser import parse_element
 
 from conftest import SAMPLES
 
 
 LD_POOL = SAMPLES / "06_ld_pool.xml"
+NS = {"p": "http://www.plcopen.org/xml/tc6_0200"}
+PREFIX = "{" + NS["p"] + "}"
 
 
 def test_sample06_project_gvl_declarations():
@@ -82,4 +89,74 @@ def test_sample06_parenthesized_set_assignment_keeps_depth_guard():
             ("bDoorClosed", "read", "IF (bHorn S= "),
             ("bLampRun", "write", "IF (bHorn S= bDoorClosed) THEN "),
         ]
+    ]
+
+
+def test_sample06_ld_ton_pins_and_actuals():
+    """REAL: overlaps synthetic block/contact/coil coverage, kept as an export regression."""
+    xref = cross_reference(parse_file(LD_POOL))
+    rows = [r for r in xref.references
+            if r.location.unit == "PRG_Ladder" and r.location.local_id in {"3", "4", "6"}]
+    assert [(r.text, r.access, r.target.name, r.member, r.location.local_id) for r in rows] == [
+        ("xStart", "read", "xStart", "", "4"),
+        ("tonDelay", "call", "tonDelay", "", "3"),
+        ("IN", "write", "tonDelay", "IN", "3"),
+        ("PT", "write", "tonDelay", "PT", "3"),
+        ("Q", "read", "tonDelay", "Q", "3"),
+        ("ET", "read", "tonDelay", "ET", "3"),
+        ("tElapsed", "write", "tElapsed", "", "3"),
+        ("xDone", "write", "xDone", "", "6"),
+    ]
+    for r in rows:
+        assert r.target == Target("variable", "Device", "Application", "PRG_Ladder", r.target.name)
+        assert r.location == Location("Device", "Application", "PRG_Ladder", local_id=r.location.local_id)
+        assert r.member_target is None and r.via is None
+    assert not [u for u in xref.unresolved
+                if u.location.unit == "PRG_Ladder" and u.location.local_id in {"3", "4", "6"}]
+
+
+@pytest.mark.parametrize("expression,names", [
+    ("xStart", ["xStart"]), ("xStart AND xDone", ["xStart", "xDone"]),
+], ids=["path", "expression"])
+def test_sample06_inline_input_actuals(expression, names):
+    """SYNTHETIC: add an inline input actual; sample 06's real inputs only have connections."""
+    root = ET.parse(LD_POOL).getroot()
+    point = root.find(".//p:block[@localId='3']/p:inputVariables/"
+                      "p:variable[@formalParameter='IN']/p:connectionPointIn", NS)
+    ET.SubElement(point, PREFIX + "expression").text = expression
+    xref = cross_reference(parse_element(root))
+    rows = [r for r in xref.references if r.location.unit == "PRG_Ladder"
+            and r.location.local_id == "3" and r.target.name in {"xStart", "xDone"}]
+    assert [(r.text, r.access, r.target, r.member, r.member_target, r.via, r.location) for r in rows] == [
+        (name, "read", Target("variable", "Device", "Application", "PRG_Ladder", name), "", None, None,
+         Location("Device", "Application", "PRG_Ladder", local_id="3"))
+        for name in names
+    ]
+    formal = [r for r in xref.references if r.location.unit == "PRG_Ladder"
+              and r.location.local_id == "3" and r.text == "IN"]
+    assert [(r.target.name, r.member, r.access) for r in formal] == [("tonDelay", "IN", "write")]
+
+
+@pytest.mark.parametrize("section,constant,formal_access,actual_access", [
+    ("outputVars", False, "read", "write"),
+    ("inOutVars", False, "readwrite", "readwrite"),
+    ("inOutVars", True, "read", "read"),
+], ids=["output", "inout", "inout-constant"])
+def test_sample06_inline_actual_uses_resolved_direction(section, constant, formal_access, actual_access):
+    """SYNTHETIC: add a TON signature; declared direction takes precedence over the pin group."""
+    root = ET.parse(LD_POOL).getroot()
+    pou = ET.SubElement(root.find("p:types/p:pous", NS), PREFIX + "pou",
+                        name="TON", pouType="functionBlock")
+    interface = ET.SubElement(pou, PREFIX + "interface")
+    holder = ET.SubElement(interface, PREFIX + section, constant=str(constant).lower())
+    variable = ET.SubElement(holder, PREFIX + "variable", name="ET")
+    ET.SubElement(ET.SubElement(variable, PREFIX + "type"), PREFIX + "TIME")
+    xref = cross_reference(parse_element(root))
+    rows = [r for r in xref.references if r.location.unit == "PRG_Ladder"
+            and r.location.local_id == "3" and r.text in {"ET", "tElapsed"}]
+    assert [(r.text, r.access, r.target, r.member, r.member_target) for r in rows] == [
+        ("ET", formal_access, Target("variable", "Device", "Application", "PRG_Ladder", "tonDelay"),
+         "ET", Target("variable", None, None, "TON", "ET")),
+        ("tElapsed", actual_access, Target("variable", "Device", "Application", "PRG_Ladder", "tElapsed"),
+         "", None),
     ]
