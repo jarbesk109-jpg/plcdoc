@@ -631,6 +631,36 @@ def test_method_local_shadows_fb_variable():
     assert x.warnings == []
 
 
+@pytest.mark.parametrize("unit", ["FC_Scale", M], ids=["function", "method"])
+def test_recursive_call_keeps_the_callee_signature(unit):
+    """SYNTHETIC: the unit's own name is the result symbol as a value but the callable when called."""
+    if unit == M:
+        root = ET.parse(DRIVE_OOP).getroot()
+        interface = root.find(".//p:Method[@name='M_Start']/p:interface", NS)
+        callee, inputs = f"m:{unit}", ["rTarget"]
+    else:
+        root = ET.parse(LARGE).getroot()
+        interface = root.find(".//p:pou[@name='FC_Scale']/p:interface", NS)
+        callee, inputs = "pou:FC_Scale.FC_Scale", ["iRaw", "rMin", "rMax"]
+    for section, name in (("inOutVars", "io"), ("localVars", "v")):
+        holder = interface.find("p:" + section, NS)
+        _declare_global(holder if holder is not None else ET.SubElement(interface, PREFIX + section), name, INT)
+    own = unit.rpartition(".")[2]
+    _set_body(root, unit, f"{own} := {own}(io := v);\n{own}({', '.join(inputs)}, v);")
+    x = cross_reference(parse_element(root))
+    assert [_short(r) for r in x.references if r.location.unit == unit] == [
+        (own, "write", f"r:{unit}.{own}", "", None),
+        (own, "call", callee, "", None),
+        ("io", "readwrite", callee, "io", f"v:{unit}.io"),
+        ("v", "readwrite", f"v:{unit}.v", "", None),
+        (own, "call", callee, "", None),
+        *[(name, "read", f"v:{unit}.{name}", "", None) for name in inputs],
+        ("v", "readwrite", f"v:{unit}.v", "", None),
+    ]
+    assert [u for u in x.unresolved if u.location.unit == unit] == []
+    assert x.warnings == []
+
+
 @pytest.mark.parametrize("declarations,body,expected", [
     ({"p": '<pointer><baseType><derived name="ST_Drive"/></baseType></pointer>'},
      "rActual := p^.eState;",
