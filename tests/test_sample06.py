@@ -63,3 +63,23 @@ def test_sample06_qualified_project_global_resolves():
         (Target("variable", None, None, "GVL_Pool", "gPoolFlag"), "read", None, "", None,
          Location(None, None, "FB_PoolUser", line=2, column=len("xFlagSeen := ") + 1)),
     ]
+
+
+def test_sample06_parenthesized_set_assignment_keeps_depth_guard():
+    """Khang compiled this real SP22 line with 0 errors; N5 keeps the depth-0 policy."""
+    project = parse_file(LD_POOL)
+    pou = next(p for p in project.pous if p.name == "PLC_PRG")
+    assert pou.body_text.splitlines()[2] == (
+        "IF (bHorn S= bDoorClosed) THEN bLampRun := TRUE; END_IF;"
+    )
+    rows = [r for r in cross_reference(project).references
+            if r.location.unit == "PLC_PRG" and r.location.line == 3]
+    assert [(r.text, r.access, r.target, r.location) for r in rows] == [
+        (name, access, Target("variable", "Device", "Application", "PLC_PRG", name),
+         Location("Device", "Application", "PLC_PRG", line=3, column=len(prefix) + 1))
+        for name, access, prefix in [
+            ("bHorn", "read", "IF ("),
+            ("bDoorClosed", "read", "IF (bHorn S= "),
+            ("bLampRun", "write", "IF (bHorn S= bDoorClosed) THEN "),
+        ]
+    ]
