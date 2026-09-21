@@ -393,6 +393,25 @@ def test_qualified_externals_normalise_or_report_missing_global(prefix):
     assert x.warnings == []
 
 
+def test_pou_name_continuation_normalises_externals_where_they_are_declared():
+    """SYNTHETIC: an external means the same wherever it is read; a project-level POU sees no GVL."""
+    root = ET.parse(LARGE).getroot()
+    root.find("./p:types/p:pous", NS).append(ET.fromstring(
+        f'<pou xmlns="{NS["p"]}" name="PRG_Pool" pouType="program"><interface><externalVars>'
+        '<variable name="bHorn"><type><BOOL/></type></variable></externalVars></interface>'
+        f'<body><ST><xhtml xmlns="{XHTML[1:XHTML.index("}")]}">bHorn := TRUE;</xhtml></ST></body></pou>'
+    ))
+    _set_body(root, P, "PRG_Pool.bHorn := TRUE;")
+    x = cross_reference(parse_element(root))
+    units = ("PRG_Pool", P)
+    assert [r for r in x.references if r.location.unit in units] == []
+    assert [(u.location.unit, u.text, u.access, u.reason) for u in x.unresolved if u.location.unit in units] == [
+        ("PRG_Pool", "bHorn", "write", "external without global"),
+        (P, "PRG_Pool.bHorn", "write", "external without global"),
+    ]
+    assert x.warnings == []
+
+
 def test_var_external_ambiguity_warns():
     root = ET.parse(TYPES_QUALIFIERS).getroot()
     for gvl in root.findall(".//p:resource/p:globalVars", NS):
@@ -857,6 +876,26 @@ def test_ld_pin_spellings_merge_into_one_reference(formal, member_target):
         (P, "1", formal, "readwrite", "v:PLC_PRG.fbConv1", formal, member_target),
     ]
     assert [u for u in x.unresolved if u.location.unit == P] == []
+
+
+def test_ld_box_without_instance_calls_its_type_and_skips_unnamed_pins():
+    """SYNTHETIC: a function box calls its typeName; a pin without a formal name adds nothing."""
+    project = _ld_project(
+        ET.parse(LARGE).getroot(),
+        f'<block localId="1" typeName="FC_Scale">{_pin("inputVariables", "iRaw")}{_pin("outputVariables", "")}</block>',
+        f'<block localId="2" typeName="ADD">{_pin("inputVariables", "IN1")}{_pin("inputVariables", "IN2")}'
+        '<outputVariables><variable><connectionPointOut/></variable></outputVariables></block>',
+    )
+    x = cross_reference(project)
+    assert [_ld_row(r) for r in x.references if r.location.unit == P] == [
+        (P, "1", "FC_Scale", "call", "pou:FC_Scale.FC_Scale", "", None),
+        (P, "1", "iRaw", "write", "pou:FC_Scale.FC_Scale", "iRaw", "v:FC_Scale.iRaw"),
+    ]
+    assert [(u.text, u.access, u.reason, u.location.local_id) for u in x.unresolved if u.location.unit == P] == [
+        ("ADD", "call", "undeclared", "2"),
+        ("IN1", "write", "undeclared callee", "2"),
+        ("IN2", "write", "undeclared callee", "2"),
+    ]
 
 
 def test_ld_fan_out_keeps_one_reference_per_pin():
