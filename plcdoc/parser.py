@@ -5,12 +5,13 @@ because the web backend will feed it files uploaded by strangers.
 
 Where things live in a CODESYS export (see ``docs/xml-structure.md``):
 
-1. ``types/pous/pou``: the standard PLCopen location (empty in CODESYS exports
-   that include the Device).
+1. ``types/pous/pou``: the standard PLCopen location (sample 06's project POU).
 2. ``.../resource/addData/data[@name=".../plcopenxml/pou"]/pou``: where CODESYS
    actually puts POUs when the Device is exported.
 3. ``configuration/globalVars`` and ``configuration/resource/globalVars``:
-   global variable lists, directly under the resource, not inside ``addData``.
+   configuration/application global variable lists.
+4. ``project/addData/data[@name=".../plcopenxml/globalvars"]/globalVars``:
+   project-level global variable lists (sample 06).
 
 Discovery is separated from parsing: every ``pou`` element goes through
 :func:`_parse_pou` and every ``*Vars`` section through :func:`_parse_variables`,
@@ -41,6 +42,7 @@ from plcdoc.model import (
 PLCOPEN_NS_PREFIX = "http://www.plcopen.org/xml/tc6"
 XHTML_NS = "http://www.w3.org/1999/xhtml"
 CODESYS_POU_DATA = "http://www.3s-software.com/plcopenxml/pou"
+CODESYS_GLOBALVARS_DATA = "http://www.3s-software.com/plcopenxml/globalvars"
 CODESYS_DATATYPE_DATA = "http://www.3s-software.com/plcopenxml/datatype"
 CODESYS_ATTRIBUTES = "http://www.3s-software.com/plcopenxml/attributes"
 CODESYS_METHOD_DATA = "http://www.3s-software.com/plcopenxml/method"
@@ -152,7 +154,8 @@ def _collect(root: Element, ns: str, project: Project) -> None:
 
     Standard locations (``types/pous``, project scope) come first. Then a
     single document-order walk carries the enclosing configuration/resource
-    names: CODESYS ``data[@name=".../pou"]`` elements contribute POUs, and
+    names: CODESYS ``data[@name=".../pou"]`` elements contribute POUs and
+    ``data[@name=".../globalvars"]`` elements contribute GVLs, while
     ``configuration`` / ``resource`` elements contribute their *direct*
     ``globalVars`` and ``task`` children (a ``globalVars`` inside a POU
     interface belongs to that POU, never to the project).
@@ -180,6 +183,11 @@ def _collect(root: Element, ns: str, project: Project) -> None:
                     unique_types.add(
                         project.data_types,
                         _parse_data_type(type_elem, ns, project.warnings, configuration, application),
+                    )
+            elif elem.get("name") == CODESYS_GLOBALVARS_DATA:
+                for gvl_elem in elem.findall(_q(ns, "globalVars")):
+                    project.gvls.append(
+                        _parse_gvl(gvl_elem, ns, project.warnings, configuration, application)
                     )
         elif elem.tag in (_q(ns, "configuration"), _q(ns, "resource")):
             for gvl_elem in elem.findall(_q(ns, "globalVars")):
