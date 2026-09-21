@@ -766,10 +766,19 @@ def _block_xml(local_id, instance, *pins):
 
 
 def _ld_project(root, *elements):
-    """SYNTHETIC: replace PLC_PRG's body in *root* with an LD network made of *elements*."""
+    """SYNTHETIC: replace PLC_PRG's body in *root* with an LD network made of *elements*.
+
+    A string is parsed inside the PLCopen default namespace; an Element is copied as it is, so an
+    unqualified child such as sample 03's ``<ElementType xmlns="">`` stays unqualified.
+    """
     body = root.find(f".//p:pou[@name='{P}']/p:body", NS)
     body.clear()
-    body.append(ET.fromstring(f'<LD xmlns="{NS["p"]}">{"".join(elements)}</LD>'))
+    ld = ET.SubElement(body, PREFIX + "LD")
+    for element in elements:
+        if isinstance(element, str):
+            ld.extend(ET.fromstring(f'<LD xmlns="{NS["p"]}">{element}</LD>'))
+        else:
+            ld.append(deepcopy(element))
     return parse_element(root)
 
 
@@ -879,8 +888,7 @@ def test_ld_execute_box_is_located_unresolved(marker_namespace, marker_text):
     wrong_extension = deepcopy(execute)
     wrong_extension.set("localId", "93")
     wrong_extension.find("p:addData/p:data", NS).set("name", "urn:vendor:fbdelementtype")
-    project = _ld_project(root, *[ET.tostring(e, encoding="unicode") for e in
-                                 (template, execute, unknown, foreign, wrong_extension)],
+    project = _ld_project(root, template, execute, unknown, foreign, wrong_extension,
                           '<contact localId="94"><variable>bDoorClosed</variable></contact>',
                           '<coil localId="95"><variable>bHorn</variable></coil>')
     before = deepcopy(project)
