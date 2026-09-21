@@ -252,15 +252,15 @@ def test_word_assignment_names_are_read_in_equalities(symbol):
     for gap in ("", " ", "\t"):
         root = ET.parse(LARGE).getroot()
         _with_locals(root, P, {symbol: BOOL})
-        body = f"IF {symbol}{gap}=TRUE THEN {symbol} := FALSE; END_IF {symbol} S= TRUE; {symbol} R= FALSE;"
-        _set_body(root, P, body)
+        prefix = f"IF {symbol}{gap}=TRUE THEN "
+        _set_body(root, P, f"{prefix}{symbol} := FALSE; END_IF {symbol} S= TRUE; {symbol} R= FALSE;")
         x = cross_reference(parse_element(root))
         rows = [r for r in x.references if r.location.unit == P]
         assert [(r.text, r.access) for r in rows] == [
             (symbol, "read"), (symbol, "write"), (symbol, "write"), (symbol, "write"),
         ]
         assert rows[0].location.column == 4
-        assert rows[1].location.column == body.index("THEN ") + len("THEN ") + 1
+        assert rows[1].location.column == len(prefix) + 1
         assert all(r.target == Target("variable", "Device", "Application", P, symbol) for r in rows)
         assert [u for u in x.unresolved if u.location.unit == P] == []
 
