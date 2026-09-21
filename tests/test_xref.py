@@ -888,7 +888,12 @@ def test_ld_execute_box_is_located_unresolved(marker_namespace, marker_text):
     wrong_extension = deepcopy(execute)
     wrong_extension.set("localId", "93")
     wrong_extension.find("p:addData/p:data", NS).set("name", "urn:vendor:fbdelementtype")
-    project = _ld_project(root, template, execute, unknown, foreign, wrong_extension,
+    foreign_wrapper = deepcopy(execute)  # a vendor's own vendorElement, not PLCopen's
+    foreign_wrapper.set("localId", "96")
+    for element in foreign_wrapper.iter():
+        if element.tag.startswith(PREFIX):
+            element.tag = "{urn:vendor}" + element.tag[len(PREFIX):]
+    project = _ld_project(root, template, execute, unknown, foreign, wrong_extension, foreign_wrapper,
                           '<contact localId="94"><variable>bDoorClosed</variable></contact>',
                           '<coil localId="95"><variable>bHorn</variable></coil>')
     before = deepcopy(project)
