@@ -32,8 +32,9 @@ project
 ```
 
 ## Where POUs live
-When the Device is included in the export, CODESYS puts POUs **inside the resource's `addData`**,
-not in `types/pous`. The standard location `types/pous` is empty.
+In samples 01–05, which include the Device, CODESYS puts POUs **inside the resource's `addData`**,
+not in `types/pous`. The standard location `types/pous` is empty in those files;
+sample 06 also has a project-level POU there (see its findings below).
 The parser must look in **both** places:
 1. `types/pous/pou`
 2. `.../resource/addData/data[@name="http://www.3s-software.com/plcopenxml/pou"]/pou`
@@ -180,8 +181,8 @@ Consequences for the parser:
   (`KindOfTask`, `Interval`, `Watchdog.Enabled`, ...).
 - `pou/documentation` (or `interface/documentation`) is the POU comment, kept in
   `Pou.comment`. No sample POU has one.
-- POU-interface `globalVars` belongs to that POU. Only direct
-  configuration/resource `globalVars` is a project GVL.
+- POU-interface `globalVars` belongs to that POU. Samples 01–04 have their GVLs
+  directly under the resource; sample 06 adds a project-level GVL in `addData`.
 
 ## Findings from `samples/05_drive_oop.xml`
 New project (not a version of 01–04): ENUM `E_DriveState`, STRUCT `ST_Drive`,
@@ -358,9 +359,83 @@ Under the project-level `addData`:
 Sample 03's `PRG_Alarm` yields two references located by `localId`: contact
 `3` reads `GVL_IO.bDoorClosed`, coil `4` writes `GVL_IO.bHorn`. Blocks
 (`block[@instanceName]` with `inputVariables` / `outputVariables` /
-`inOutVariables` pins) and `inVariable` / `outVariable` boxes have no real
-export yet; their handling (one reference per pin, connections never add
-references) is covered by synthetic tests only.
+`inOutVariables` pins) and `inVariable` boxes now have a real example in sample
+06 below. The existing synthetic tests also cover `outVariable` boxes and
+block-to-block wiring.
+
+## Findings from `samples/06_ld_pool.xml`
+
+The file header identifies CODESYS V3.5 SP22 Patch 3. This export contains
+project-level objects as well as `Device` / `Application` objects.
+
+### Project-level GVL and POU
+- `GVL_Pool` is at
+  `project/addData/data[@name="http://www.3s-software.com/plcopenxml/globalvars"]/globalVars`.
+  Its direct variables are `gPoolCount : INT` and `gPoolFlag : BOOL`.
+- `FB_PoolUser` is at `project/types/pous/pou`, with `pouType="functionBlock"`.
+  Its `interface/externalVars` declares `gPoolCount : INT`, and
+  `interface/outputVars` declares `xFlagSeen : BOOL`. Its ST body is:
+  ```st
+  gPoolCount := gPoolCount + 1;
+  xFlagSeen := GVL_Pool.gPoolFlag;
+  ```
+- Neither object is enclosed by a configuration or resource. In
+  `ProjectStructure`, both are siblings of `Device`, outside `Application`.
+- `PLC_PRG` and `PRG_Ladder` are in the Application resource's `addData`, each
+  inside a `data[@name="http://www.3s-software.com/plcopenxml/pou"]` wrapper.
+  `PLC_PRG` calls `PRG_Ladder()` and `fbPool()` and contains
+  `IF (bHorn S= bDoorClosed) THEN bLampRun := TRUE; END_IF;`.
+
+### Real LD block and pins
+`PRG_Ladder/body/LD` contains these PLCopen-namespaced elements:
+- Contact `localId="4"` reads the `variable` text `xStart` and is connected to
+  left power rail `0`.
+- `inVariable localId="5"` contains `expression` text `T#2S`.
+- `block localId="3" typeName="TON" instanceName="tonDelay"` has
+  `inputVariables/variable` pins `IN` and `PT`. Their
+  `connectionPointIn/connection/@refLocalId` values are `4` and `5` respectively;
+  neither input pin has an inline expression in this file.
+- Its `inOutVariables` is empty. The `outputVariables/variable` pins are `Q`
+  and `ET`. `Q/connectionPointOut` is empty, while the ET pin contains:
+  ```xml
+  <variable formalParameter="ET">
+    <connectionPointOut>
+      <expression>tElapsed</expression>
+    </connectionPointOut>
+  </variable>
+  ```
+- Coil `localId="6"` contains `variable` text `xDone`; its incoming connection
+  has `refLocalId="3" formalParameter="Q"`.
+- The TON block's `addData` contains `fbdcalltype/CallType` text `functionblock`,
+  `inputparamtypes/InputParamTypes` text `BOOL TIME`, and empty
+  `outputparamtypes/OutputParamTypes`. These three payload elements reset their
+  namespace with `xmlns=""`.
+
+### Real Execute box and known issue
+The second network has contact `localId="10"` with variable `xDone`, followed
+by **`block localId="9" typeName="EXECUTE"`**, with no `instanceName`.
+Its input pin `EN` connects to contact `10`; output pin `ENO` has an empty
+`connectionPointOut`, and `inOutVariables` is empty.
+
+The block's PLCopen-namespaced `addData/data` wrappers contain:
+- `name="http://www.3s-software.com/plcopenxml/fbdcalltype"` with
+  `<CallType xmlns="">execute</CallType>`;
+- `name="http://www.3s-software.com/plcopenxml/inputparamtypes"` with
+  `<InputParamTypes xmlns="">BOOL</InputParamTypes>`;
+- `name="http://www.3s-software.com/plcopenxml/outputparamtypes"` with an empty
+  `<OutputParamTypes xmlns="" />`;
+- `name="http://www.3s-software.com/plcopenxml/stcode"` with unqualified
+  `STCode`, whose text has three leading spaces on each line and a trailing LF:
+  ```text
+     iCount := iCount + 1;
+     xLamp := xDone AND xStart;
+  ```
+
+**Known issue:** the Execute payload is not cross-referenced yet. The existing
+synthetic Execute fixtures use a `vendorElement` with an `fbdelementtype`
+marker; they model a shape this SP22 export does not produce. In this file,
+the `vendorElement` markers are `networktitle`, while Execute is the block
+described above. Payload cross-referencing needs its own implementation plan.
 
 ## Useful extras
 - `task`: task name, cycle (`interval="PT0.02S"`), priority, and which program it calls → program tree.
