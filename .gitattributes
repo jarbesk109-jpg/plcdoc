@@ -1,0 +1,2 @@
+* text=auto
+samples/*.xml -text
