@@ -834,17 +834,9 @@ class _Scanner:
         type_elem = self.index.type_element(decl) if isinstance(decl, Variable) else None
         owner = head.owner
         for token in rest:
-            if isinstance(decl, Pou):
-                found = _member_of_pou(decl, token.text)
-                normalised = self._normalise(found, owner) if found is not None else "no such member"
-                if normalised == "external without global":
-                    return normalised
-                if isinstance(normalised, str):
-                    member_target, decl, type_elem = None, None, None
-                else:
-                    member_target, decl, owner = normalised.target, normalised.decl, normalised.owner
-                    type_elem = self.index.type_element(decl) if isinstance(decl, Variable) else None
-            elif isinstance(decl, (Variable, _InlineField)):
+            # A head is never a POU here (POU-name heads continue in _resolve); a method,
+            # property or action ends the typed walk.
+            if isinstance(decl, (Variable, _InlineField)):
                 step = self._step_type(type_elem, owner, token.text)
                 if isinstance(step, str):
                     return step
