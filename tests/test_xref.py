@@ -842,6 +842,23 @@ def test_ld_unknown_formal_merges_access_in_both_group_orders(other_group):
         assert [u for u in x.unresolved if u.location.unit == P] == []
 
 
+@pytest.mark.parametrize("formal,member_target", [
+    ("io", "v:FB_Motor.io"), ("opaque", None),
+], ids=["resolved", "unresolved"])
+def test_ld_pin_spellings_merge_into_one_reference(formal, member_target):
+    """SYNTHETIC: pins compare case-insensitively like formals; the first spelling is reported."""
+    project = _ld_project(
+        _in_out_project(),
+        _block_xml(1, "fbConv1", _pin("inputVariables", formal), _pin("outputVariables", formal.upper())),
+    )
+    x = cross_reference(project)
+    assert [_ld_row(r) for r in x.references if r.location.unit == P] == [
+        (P, "1", "fbConv1", "call", "v:PLC_PRG.fbConv1", "", None),
+        (P, "1", formal, "readwrite", "v:PLC_PRG.fbConv1", formal, member_target),
+    ]
+    assert [u for u in x.unresolved if u.location.unit == P] == []
+
+
 def test_ld_fan_out_keeps_one_reference_per_pin():
     project = _ld_project(
         ET.parse(LARGE).getroot(),

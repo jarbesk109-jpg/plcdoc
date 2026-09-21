@@ -541,8 +541,9 @@ class _Scanner:
         if callee is None:
             return  # nothing to attach pins to (no name, or an enum literal)
         # Exactly one reference per pin; a pin listed under several groups merges to readwrite.
+        # Pins compare case-insensitively like formals; the first spelling is the one reported.
         formals = {v.name.lower(): v for v in callee.formals or []}
-        pins: dict[str, str] = {}
+        pins: dict[str, tuple[str, str]] = {}  # lower-cased name -> (first spelling, access)
         for group in block:
             if not isinstance(group.tag, str):
                 continue
@@ -556,9 +557,9 @@ class _Scanner:
                 if not name:
                     continue
                 direction = _direction(formals.get(name.lower()), section)[0]
-                previous = pins.get(name)
-                pins[name] = direction if previous in (None, direction) else "readwrite"
-        for name, access in pins.items():
+                spelling, previous = pins.get(name.lower(), (name, None))
+                pins[name.lower()] = (spelling, direction if previous in (None, direction) else "readwrite")
+        for name, access in pins.values():
             location = self._location(0)
             if callee.target is None:
                 self.result.unresolved.append(Unresolved(name, access, location, "undeclared callee"))
