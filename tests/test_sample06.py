@@ -72,24 +72,57 @@ def test_sample06_qualified_project_global_resolves():
     ]
 
 
-def test_sample06_parenthesized_set_assignment_keeps_depth_guard():
-    """Khang compiled this real SP22 line with 0 errors; N5 keeps the depth-0 policy."""
-    project = parse_file(LD_POOL)
-    pou = next(p for p in project.pous if p.name == "PLC_PRG")
-    assert pou.body_text.splitlines()[2] == (
-        "IF (bHorn S= bDoorClosed) THEN bLampRun := TRUE; END_IF;"
-    )
-    rows = [r for r in cross_reference(project).references
+SET_LINE = "IF (bHorn S= bDoorClosed) THEN bLampRun := TRUE; END_IF;"
+
+
+def _plc_prg_line3(project):
+    """References and unresolved occurrences on PLC_PRG line 3."""
+    xref = cross_reference(project)
+    rows = [(r.text, r.access, r.target, r.location) for r in xref.references
             if r.location.unit == "PLC_PRG" and r.location.line == 3]
-    assert [(r.text, r.access, r.target, r.location) for r in rows] == [
+    unresolved = [(u.text, u.access, u.reason) for u in xref.unresolved
+                  if u.location.unit == "PLC_PRG" and u.location.line == 3]
+    return rows, unresolved
+
+
+def _line3(*occurrences):
+    return [
         (name, access, Target("variable", "Device", "Application", "PLC_PRG", name),
          Location("Device", "Application", "PLC_PRG", line=3, column=len(prefix) + 1))
-        for name, access, prefix in [
-            ("bHorn", "read", "IF ("),
-            ("bDoorClosed", "read", "IF (bHorn S= "),
-            ("bLampRun", "write", "IF (bHorn S= bDoorClosed) THEN "),
-        ]
+        for name, access, prefix in occurrences
     ]
+
+
+def _with_plc_prg_line3(line):
+    """Sample 06 with PLC_PRG line 3 replaced in memory; the sample bytes are unchanged."""
+    root = ET.parse(LD_POOL).getroot()
+    pou = next(e for e in root.iter(PREFIX + "pou") if e.get("name") == "PLC_PRG")
+    st = pou.find("p:body/p:ST/{http://www.w3.org/1999/xhtml}xhtml", NS)
+    assert st.text.count(SET_LINE) == 1
+    st.text = st.text.replace(SET_LINE, line)
+    return parse_element(root)
+
+
+def test_sample06_parenthesized_set_writes_its_left_hand_path():
+    """REAL: Khang built this SP22 line 0/0 and simulation latched bHorn (K1), so S= writes it."""
+    project = parse_file(LD_POOL)
+    pou = next(p for p in project.pous if p.name == "PLC_PRG")
+    assert pou.body_text.splitlines()[2] == SET_LINE
+    assert _plc_prg_line3(project) == (_line3(
+        ("bHorn", "write", "IF ("),
+        ("bDoorClosed", "read", "IF (bHorn S= "),
+        ("bLampRun", "write", "IF (bHorn S= bDoorClosed) THEN "),
+    ), [])
+
+
+def test_sample06_parenthesized_reset_writes_its_left_hand_path():
+    """SYNTHETIC XML: Khang built this SP22 form 0/0 and simulation reset bHorn (K1), so R= writes it."""
+    project = _with_plc_prg_line3("IF (bHorn R= bDoorClosed) THEN bLampRun := FALSE; END_IF;")
+    assert _plc_prg_line3(project) == (_line3(
+        ("bHorn", "write", "IF ("),
+        ("bDoorClosed", "read", "IF (bHorn R= "),
+        ("bLampRun", "write", "IF (bHorn R= bDoorClosed) THEN "),
+    ), [])
 
 
 def test_sample06_ld_ton_pins_and_actuals():

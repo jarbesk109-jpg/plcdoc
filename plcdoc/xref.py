@@ -330,6 +330,8 @@ PERSISTENT
 """.split())
 _SELF = frozenset({"THIS", "SUPER"})
 _WORD_ASSIGN = frozenset({"S", "R", "REF"})
+# Inside grouping brackets only S= and R= are proven (K1: SP22 build and simulation); REF= is untested.
+_GROUPED_WORD_ASSIGN = frozenset({"S", "R"})
 
 _UNSIGNED_REAL = r"[0-9][0-9_]*(?:\.[0-9][0-9_]*)?"
 _DECIMAL = rf"{_UNSIGNED_REAL}(?:[eE][+-]?[0-9]+)?"
@@ -464,6 +466,14 @@ def _direction(formal: Variable | None, fallback_section: str = "input") -> tupl
     if formal.section == "inout" and formal.constant:
         return ("read", "read")
     return _DIRECTION.get(formal.section, ("read", "read"))
+
+
+def _word_assign(frame: _Frame | None) -> frozenset[str]:
+    """Word operators that write the path before them at depth 0 or in a grouping bracket."""
+    if frame is None:
+        return _WORD_ASSIGN
+    # A call's argument list is untested for S=/R= and keeps the depth-0-only rule.
+    return _GROUPED_WORD_ASSIGN if frame.callee is None else frozenset()
 
 
 class _Scanner:
@@ -601,8 +611,8 @@ class _Scanner:
                 elif following is not None and following.kind == "assign":
                     self._emit(path, "write")
                     i = path.end + 1
-                elif not stack and following is not None and following.kind == "ident" \
-                        and following.text.upper() in _WORD_ASSIGN \
+                elif following is not None and following.kind == "ident" \
+                        and following.text.upper() in _word_assign(frame) \
                         and path.end + 1 < end and tokens[path.end + 1].text == "=":
                     # S/R/REF are operators only after a left-hand path; "IF R=TRUE" reads R.
                     self._emit(path, "write")
