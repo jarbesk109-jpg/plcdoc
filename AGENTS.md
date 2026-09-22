@@ -23,5 +23,7 @@ and a program tree (Markdown/Excel export), plus a side-by-side diff between two
 - No UI polish while core tests are failing.
 - Commit messages: `feat:`, `fix:`, `test:`, `docs:`, `chore:`.
 - Record any non-obvious technical decision in `docs/decisions.md` (what, why, alternatives).
-- Before ending a session: commit all work, and update "Current status" in `.local/PLAN.md` if it exists.
+- Before ending a session: commit all work, and update the handoff in `.local/STATE.md` if it exists
+  (rewrite only Verified state, Done and Next; Decisions and Known issues are append-only; never commit in `.local/`).
+  `.local/PLAN.md` is human-owned and read-only for agents: never edit it.
   Another agent (Claude Code or Codex) may continue from where you stop.
