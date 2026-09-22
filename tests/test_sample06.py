@@ -125,6 +125,16 @@ def test_sample06_parenthesized_reset_writes_its_left_hand_path():
     ), [])
 
 
+def test_sample06_parenthesized_assignment_writes_its_left_hand_path():
+    """SYNTHETIC XML: Khang built this SP22 form 0/0 and simulation assigned bLampRun (K1), so := writes it."""
+    project = _with_plc_prg_line3("IF (bLampRun := bDoorClosed) THEN bHorn := FALSE; END_IF;")
+    assert _plc_prg_line3(project) == (_line3(
+        ("bLampRun", "write", "IF ("),
+        ("bDoorClosed", "read", "IF (bLampRun := "),
+        ("bHorn", "write", "IF (bLampRun := bDoorClosed) THEN "),
+    ), [])
+
+
 def test_sample06_ld_ton_pins_and_actuals():
     """REAL: overlaps synthetic block/contact/coil coverage, kept as an export regression."""
     xref = cross_reference(parse_file(LD_POOL))
