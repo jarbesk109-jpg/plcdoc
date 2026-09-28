@@ -136,6 +136,10 @@ def test_terminal_table_keeps_comment_text_verbatim():
     ("&#65; &copy;", "&#65; &copy;"),
     ("<3@example.com>", "<3@example.com>"),
     (r"\<b>", r"\<b>"),
+    pytest.param("a\rb", "a b", id="cr"),
+    pytest.param("a\r\nb", "a b", id="crlf"),
+    pytest.param("a\tb", "a b", id="tab"),
+    pytest.param("x\\|y", "x\\\\|y", id="bs-pipe"),
 ])
 def test_terminal_cells_only_escape_pipes_and_flatten_newlines(value, expected):
     table = terminal_table(("C",), [(value,)])

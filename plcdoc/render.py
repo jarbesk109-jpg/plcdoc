@@ -5,13 +5,16 @@ Rendered Markdown export needs separate escaping in M3.
 
 from __future__ import annotations
 
+import re
 from typing import Sequence
+
+_LINE_ENDING = re.compile(r"\r\n|\r|\n")
 
 
 def _cell(value: object) -> str:
     if value is None:
         return ""
-    return str(value).replace("|", "\\|").replace("\n", " ")
+    return _LINE_ENDING.sub(" ", str(value)).replace("\t", " ").replace("|", "\\|")
 
 
 def terminal_table(headers: Sequence[str], rows: Sequence[Sequence[object]]) -> str:
