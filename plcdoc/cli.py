@@ -11,10 +11,14 @@ from plcdoc import __version__
 from plcdoc.model import Project
 from plcdoc.parser import ParseError, parse_file
 from plcdoc.render import terminal_table
-from plcdoc.tables import io_table, variable_table
-
-IO_HEADERS = ("Address", "Direction", "Name", "Type", "Scope", "Comment")
-VAR_HEADERS = ("Scope", "Section", "Name", "Type", "Address", "Initial", "Comment")
+from plcdoc.tables import (
+    IO_HEADERS,
+    VAR_HEADERS,
+    io_cells,
+    io_table,
+    variable_cells,
+    variable_table,
+)
 
 
 def render_report(project: Project) -> str:
@@ -30,20 +34,11 @@ def render_report(project: Project) -> str:
         "",
         f"## I/O table ({len(io_rows)})",
         "",
-        terminal_table(
-            IO_HEADERS,
-            [(r.address, r.direction, r.name, r.type, r.scope, r.comment) for r in io_rows],
-        ),
+        terminal_table(IO_HEADERS, [io_cells(r) for r in io_rows]),
         "",
         f"## Variables ({len(variables)})",
         "",
-        terminal_table(
-            VAR_HEADERS,
-            [
-                (v.scope, v.section, v.name, v.type, v.address, v.initial_value, v.comment)
-                for v in variables
-            ],
-        ),
+        terminal_table(VAR_HEADERS, [variable_cells(v) for v in variables]),
         "",
     ]
     return "\n".join(parts)

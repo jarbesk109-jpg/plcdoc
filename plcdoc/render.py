@@ -1,6 +1,6 @@
 """Plain terminal tables using Markdown-style separators.
 
-Rendered Markdown export needs separate escaping in M3.
+The rendered Markdown export has its own escaping: see :mod:`plcdoc.markdown`.
 """
 
 from __future__ import annotations
@@ -17,9 +17,8 @@ def _cell(value: object) -> str:
     return _LINE_ENDING.sub(" ", str(value)).replace("\t", " ").replace("|", "\\|")
 
 
-def terminal_table(headers: Sequence[str], rows: Sequence[Sequence[object]]) -> str:
-    """Render a padded terminal table. Cells are stringified; None becomes empty."""
-    text_rows = [[_cell(v) for v in row] for row in rows]
+def _layout(headers: Sequence[str], text_rows: Sequence[Sequence[str]]) -> str:
+    """Pad finished cell texts into columns under a separator row."""
     widths = [len(h) for h in headers]
     for row in text_rows:
         for i, cell in enumerate(row):
@@ -31,3 +30,8 @@ def terminal_table(headers: Sequence[str], rows: Sequence[Sequence[object]]) -> 
     out = [line(list(headers)), "|" + "|".join("-" * (w + 2) for w in widths) + "|"]
     out.extend(line(row) for row in text_rows)
     return "\n".join(out)
+
+
+def terminal_table(headers: Sequence[str], rows: Sequence[Sequence[object]]) -> str:
+    """Render a padded terminal table. Cells are stringified; None becomes empty."""
+    return _layout(headers, [[_cell(v) for v in row] for row in rows])

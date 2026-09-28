@@ -1,10 +1,17 @@
-"""Derived tables from a :class:`Project`: I/O table and variable list."""
+"""Derived tables from a :class:`Project`: I/O table and variable list.
+
+The headers and cell projections are shared by the terminal report and the
+Markdown export.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from plcdoc.model import Project, Variable
+
+IO_HEADERS = ("Address", "Direction", "Name", "Type", "Scope", "Comment")
+VAR_HEADERS = ("Scope", "Section", "Name", "Type", "Address", "Initial", "Comment")
 
 
 @dataclass
@@ -50,3 +57,13 @@ def io_table(project: Project) -> list[IoRow]:
 def variable_table(project: Project) -> list[Variable]:
     """Every variable in parse order: global lists first, then POUs."""
     return list(project.all_variables())
+
+
+def io_cells(row: IoRow) -> tuple:
+    """The displayed values of an I/O row, in ``IO_HEADERS`` order."""
+    return (row.address, row.direction, row.name, row.type, row.scope, row.comment)
+
+
+def variable_cells(var: Variable) -> tuple:
+    """The displayed values of a variable, in ``VAR_HEADERS`` order."""
+    return (var.scope, var.section, var.name, var.type, var.address, var.initial_value, var.comment)
