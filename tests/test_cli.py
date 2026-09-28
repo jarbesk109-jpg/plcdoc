@@ -7,7 +7,7 @@ import sys
 import pytest
 
 from plcdoc.cli import main
-from plcdoc.render import markdown_table
+from plcdoc.render import terminal_table
 
 from conftest import DRIVE_OOP, LARGE, SMALL_V1, TYPES_QUALIFIERS
 
@@ -95,8 +95,8 @@ def test_module_entry_point_runs():
     assert json.loads(result.stdout.decode("utf-8"))["name"] == "conveyor_v1.project"
 
 
-def test_markdown_table_escapes_pipes_and_none():
-    text = markdown_table(("A", "B"), [("x|y", None), ("long value", 1)])
+def test_terminal_table_escapes_pipes_and_none():
+    text = terminal_table(("A", "B"), [("x|y", None), ("long value", 1)])
     assert text.splitlines() == [
         "| A          | B |",
         "|------------|---|",
@@ -126,7 +126,7 @@ def test_sample04_json_exposes_lossless_model(capsys):
 
 
 def test_terminal_table_keeps_comment_text_verbatim():
-    table = markdown_table(("Comment",), [("T > 5 & x < 10",)])
+    table = terminal_table(("Comment",), [("T > 5 & x < 10",)])
     assert "| T > 5 & x < 10 |" in table
 
 
@@ -138,7 +138,7 @@ def test_terminal_table_keeps_comment_text_verbatim():
     (r"\<b>", r"\<b>"),
 ])
 def test_terminal_cells_only_escape_pipes_and_flatten_newlines(value, expected):
-    table = markdown_table(("C",), [(value,)])
+    table = terminal_table(("C",), [(value,)])
     assert table.splitlines()[2] == f"| {expected} |"
 
 

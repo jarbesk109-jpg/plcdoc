@@ -10,7 +10,7 @@ from typing import Sequence
 from plcdoc import __version__
 from plcdoc.model import Project
 from plcdoc.parser import ParseError, parse_file
-from plcdoc.render import markdown_table
+from plcdoc.render import terminal_table
 from plcdoc.tables import io_table, variable_table
 
 IO_HEADERS = ("Address", "Direction", "Name", "Type", "Scope", "Comment")
@@ -18,7 +18,7 @@ VAR_HEADERS = ("Scope", "Section", "Name", "Type", "Address", "Initial", "Commen
 
 
 def render_report(project: Project) -> str:
-    """Markdown report: project header, I/O table, variable list."""
+    """Terminal report: project header, I/O table, variable list."""
     io_rows = io_table(project)
     variables = variable_table(project)
     parts = [
@@ -30,14 +30,14 @@ def render_report(project: Project) -> str:
         "",
         f"## I/O table ({len(io_rows)})",
         "",
-        markdown_table(
+        terminal_table(
             IO_HEADERS,
             [(r.address, r.direction, r.name, r.type, r.scope, r.comment) for r in io_rows],
         ),
         "",
         f"## Variables ({len(variables)})",
         "",
-        markdown_table(
+        terminal_table(
             VAR_HEADERS,
             [
                 (v.scope, v.section, v.name, v.type, v.address, v.initial_value, v.comment)

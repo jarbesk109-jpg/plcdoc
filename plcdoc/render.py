@@ -14,7 +14,7 @@ def _cell(value: object) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
 
 
-def markdown_table(headers: Sequence[str], rows: Sequence[Sequence[object]]) -> str:
+def terminal_table(headers: Sequence[str], rows: Sequence[Sequence[object]]) -> str:
     """Render a padded terminal table. Cells are stringified; None becomes empty."""
     text_rows = [[_cell(v) for v in row] for row in rows]
     widths = [len(h) for h in headers]
