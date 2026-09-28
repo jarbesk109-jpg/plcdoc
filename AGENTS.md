@@ -21,7 +21,8 @@ and a program tree (Markdown/Excel export), plus a side-by-side diff between two
 - Never change the agreed plan silently. Propose the change, explain why, and wait for approval.
 - Every feature ships with tests. Run `pytest` before finishing. Never finish with failing tests.
 - No UI polish while core tests are failing.
-- Commit messages: `feat:`, `fix:`, `test:`, `docs:`, `chore:`.
+- Commit messages follow Conventional Commits 1.0.0: `type(scope): summary`, where type is one of `feat`, `fix`, `refactor`, `test`, `docs`, `chore` and the optional scope names the area (`parser`, `xref`, `render`, `markdown`, `cli`, `samples`, `decisions`).
+- Public API: the names in `plcdoc.__all__`. Everything else, submodule paths included (`plcdoc.render`, `plcdoc.cli`, `plcdoc.markdown`, `plcdoc.tables`), is internal and may change without an alias.
 - Record any non-obvious technical decision in `docs/decisions.md` (what, why, alternatives).
 - Before ending a session: commit all work, and update the handoff in `.local/STATE.md` if it exists
   (rewrite only Verified state, Done and Next; Decisions and Known issues are append-only; never commit in `.local/`).
