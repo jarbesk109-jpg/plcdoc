@@ -6,7 +6,7 @@ and a program tree (Markdown/Excel export), plus a side-by-side diff between two
 
 ## Before you start
 1. Read `docs/decisions.md`.
-2. If `.local/PLAN.md` exists, read it. It holds the milestone plan and current status.
+2. If `.local/PLAN.md` exists, read it for the milestone plan (human-owned, read-only); read `.local/STATE.md`, if it exists, for the current state and handoff.
 3. Work on exactly one milestone per session. Do not start the next one unasked.
 
 ## Architecture
