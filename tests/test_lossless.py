@@ -5,6 +5,7 @@ samples (nested arrays, WSTRING, struct values and generic graphical extensions)
 Every probe names the model field that must carry the change.
 """
 
+import re
 from copy import deepcopy
 from xml.etree import ElementTree as ET
 
@@ -387,14 +388,18 @@ def test_canonical_text_is_preserved_verbatim(fragment, expected):
     assert [(node.text, node.tail) for node in vendor.iter()] == expected
 
 
+# Two namespaced attributes and an XHTML child: four URIs in one fragment.
+FRAGMENT = (
+    '<vendor xmlns:a="urn:a" xmlns:b="urn:b" a:x="1" b:y="2">'
+    '<xhtml xmlns="http://www.w3.org/1999/xhtml"> x &lt; 10 </xhtml></vendor>'
+)
+
+
 @pytest.mark.parametrize("field", ["type_xml", "initial_value_xml", "return_type_xml"])
 @pytest.mark.parametrize("attributes", ['a:x="1" b:y="2"', 'b:y="2" a:x="1"'])
 def test_canonical_prefixes_ignore_namespaced_attribute_order(field, attributes, monkeypatch):
     monkeypatch.setattr(ET, "_namespace_map", ET._namespace_map.copy())
-    first = _declaration_xml(
-        '<vendor xmlns:a="urn:a" xmlns:b="urn:b" a:x="1" b:y="2">'
-        '<xhtml xmlns="http://www.w3.org/1999/xhtml"> x &lt; 10 </xhtml></vendor>', field,
-    )
+    first = _declaration_xml(FRAGMENT, field)
     ET.register_namespace("other", "urn:a")
     ET.register_namespace("html", "http://www.w3.org/1999/xhtml")
     renamed = attributes.replace("a:", "second:").replace("b:", "first:")
@@ -406,6 +411,23 @@ def test_canonical_prefixes_ignore_namespaced_attribute_order(field, attributes,
     vendor = next(node for node in ET.fromstring(second).iter() if "{urn:a}x" in node.attrib)
     assert vendor.attrib == {"{urn:a}x": "1", "{urn:b}y": "2"}
     assert vendor[0].text == " x < 10 "
+
+
+def _declared(xml):
+    """Every (prefix, URI) the canonical string declares; a default namespace has prefix ''."""
+    return set(re.findall(r'xmlns(?::(\w+))?="([^"]*)"', xml))
+
+
+def test_canonical_prefixes_number_sorted_uris_from_n0_per_fragment():
+    """Decision 010: n0, n1, ... follow the fragment's sorted URIs and restart per fragment."""
+    var = _type_variant(FRAGMENT, '<simpleValue value="1"/>')
+    assert _declared(var.type_xml) == {
+        ("n0", NS["p"]),
+        ("n1", "http://www.w3.org/1999/xhtml"),
+        ("n2", "urn:a"),
+        ("n3", "urn:b"),
+    }
+    assert _declared(var.initial_value_xml) == {("n0", NS["p"])}
 
 
 def test_canonical_xml_does_not_depend_on_registered_namespace_prefixes(monkeypatch):
